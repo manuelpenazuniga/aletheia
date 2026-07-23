@@ -89,6 +89,14 @@ Experiments are pre-registered in `CLAUDE.md` §8 (E1 concurrency, E2 chaos,
 E3 knowledge-update, E4 poisoning, E5 cost). Tables R1–R3 are populated **only**
 with real numbers from real runs; unrun cells say `pendiente`.
 
+**E3b — external validation.** The knowledge-update result is replicated on a
+stratified subset of [LongMemEval](https://github.com/xiaowu0162/LongMemEval),
+restricted to the *knowledge-update* and *temporal-reasoning* categories. The
+point is falsifiability: a recognised external benchmark shows the consolidation
+effect is not an artefact of our own synthetic corpus. The exact question IDs are
+committed in [`scenarios/longmemeval/SUBSET.md`](scenarios/longmemeval/SUBSET.md)
+so the run is reproducible.
+
 **Status: `pendiente` — experiments run in Phase 3.** See [`docs/results.md`](docs/results.md).
 
 ## Quickstart (local development)
@@ -134,7 +142,7 @@ core/         portable core — never imports boto3 or psycopg (enforced by a te
 adapters/     InMemoryAdapter (tests) + CockroachDBAdapter (psycopg + VECTOR)
 ingest/       write service (FastAPI) with the immune gate
 agents/       SRE fleet: loop, prompts, MCP client
-scenarios/    simulated incidents, distributed clues, poison suite
+scenarios/    simulated incidents, distributed clues, poison suite, LongMemEval subset
 experiments/  runner, arms, seeds, scoring
 chaos/        ccloud scripts for kill-node + integrity measurement
 lambdas/      consolidation and gossip-tick handlers
@@ -150,8 +158,8 @@ docs/         architecture and results
 | 0 | Foundations: repo, CI, schema, frozen core contracts, smoke test | in progress |
 | 1 | Memory core: CockroachDB adapter, consolidation, forgetting, ingest | pendiente |
 | 2 | Fleet, gossip, immune system, scenarios | pendiente |
-| 3 | Experiments E1–E6, results tables | pendiente |
-| 4 | Public demo app | pendiente |
+| 3 | Experiments E1–E6 + E3b external validation, results tables | pendiente |
+| 4 | Public demo app, incl. the ablation wall | pendiente |
 | 5 | Packaging and submission | pendiente |
 
 ## License

@@ -31,7 +31,7 @@ around one asymmetry: **agents are unreliable, the memory must not be.**
                         │  ┌──────────────────────────────┐  ┌────────────────┐ │
                         │  │ DEMO APP (App Runner)         │  │ S3: transcripts│ │
                         │  │ fleet dashboard · kill-switch │  │ snapshots      │ │
-                        │  │ chaos panel · immune feed     │  │ archived memory│ │
+                        │  │ chaos · immune · ablation wall│  │ archived memory│ │
                         │  └──────────────────────────────┘  └────────────────┘ │
                         └───────────────────────────────────────────────────────┘
   ccloud CLI (ops agent + chaos experiment) ──▶ CockroachDB Cloud control plane
@@ -149,3 +149,28 @@ Against `cockroachdb/cockroach:v25.4.13` (local single node):
 4. **Cluster version alignment.** Local development pins
    `CRDB_IMAGE_TAG=v25.4.13`; align it with whatever version CockroachDB Cloud
    provisions.
+
+## 9. Deferred decisions (Phases 3–4)
+
+Recorded here so they are not rediscovered late. Neither is implemented yet.
+
+1. **E3b — external validation on LongMemEval** (CLAUDE.md §8.1, §8.4). The
+   knowledge-update arms (`A0_full`, `A1_no_consolidation`, `BL_rag`) are replayed
+   on a stratified subset of the public LongMemEval benchmark, restricted to the
+   *knowledge-update* and *temporal-reasoning* categories — the full benchmark is
+   out of budget. Two artefacts are required and currently exist as placeholders:
+   `scenarios/longmemeval/SUBSET.md` (the exact question IDs, for reproducibility)
+   and `experiments/scoring_lme.py` (the scoring adapter). Open question for
+   Phase 3: how the benchmark's conversational sessions map onto `MemoryEvent`
+   provenance, since LongMemEval has no notion of which agent observed what.
+
+2. **Ablation wall — live fleets or synchronised replays** (CLAUDE.md §9.1.6,
+   §10 Phase 4). A four-panel grid — `full`, `−consolidation`, `−immune`,
+   `−forgetting` — running the same scenario under the same seed and diverging
+   under the same events. Four live fleets is the stronger demonstration; four
+   synchronised replays of real recorded runs is the cheaper one. The decision is
+   deferred to Phase 4 and must be taken on the token cost actually measured in
+   Phase 3, then **documented in the README and stated in the video** — a replay
+   presented as a live fleet would be exactly the kind of disguised mock
+   CLAUDE.md §3.2 forbids. Either way the wall reads the four ablations from the
+   same feature flags in `AletheiaConfig`; no new configuration surface.

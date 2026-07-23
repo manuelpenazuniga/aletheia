@@ -65,6 +65,10 @@ markers = [
 target-version = "py312"
 line-length = 100
 src = ["."]
+# Ruff formats Python code blocks inside Markdown. CLAUDE.md is the source of
+# truth for this project and its §7 contract block is quoted verbatim — a
+# formatter must never rewrite it. Documentation is prose, not build output.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]

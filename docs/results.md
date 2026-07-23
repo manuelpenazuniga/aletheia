@@ -72,6 +72,34 @@ Cells: mean ± σ over 5 seeds.
 
 ---
 
+## R3b — External validation on LongMemEval (E3b)
+
+**Hypothesis.** The knowledge-update effect measured in E3 on our own synthetic
+corpus **replicates on a public benchmark**. If it does not, E3 was measuring a
+property of our dataset rather than of consolidation, and that is reported as
+such — this table exists precisely so the claim can fail in public.
+
+Subset: stratified sample of LongMemEval, *knowledge-update* and
+*temporal-reasoning* categories only. Exact question IDs are pinned in
+[`scenarios/longmemeval/SUBSET.md`](../scenarios/longmemeval/SUBSET.md); the
+scoring adapter is `experiments/scoring_lme.py`. Both are placeholders today —
+**the subset has not been selected and nothing has been run.**
+
+Cells: mean ± σ over 5 seeds, scored by the benchmark's own criteria.
+
+| Config | LME knowledge-update acc. | LME temporal-reasoning acc. | Replicates E3 direction? |
+|---|---:|---:|---|
+| A0 full | pendiente | pendiente | pendiente |
+| A1 −consolidation | ▼ pendiente | pendiente | pendiente |
+| BL plain RAG | ▼ pendiente | pendiente | pendiente |
+
+Scope limits stated up front, so the reduction is auditable rather than quiet:
+the full benchmark is out of budget; the excluded categories are named in
+`SUBSET.md`; the subset is drawn once with a fixed seed and is not re-rolled
+between arms or seeds. Per §11, E3b is cut before seeds are reduced from 5 to 3.
+
+---
+
 ## Controls in force for every arm
 
 1. `retrieval_budget_tokens` is identical across arms — otherwise Aletheia would
@@ -92,6 +120,6 @@ do not appear in the tables above.
 | Default isolation | `serializable` | `SHOW transaction_isolation` |
 | Vector round-trip | 1024 dims | `vector_dims(embedding)` after commit |
 | Vector index serving search | yes, `memories@idx_mem_embedding` | `EXPLAIN` in `smoke.py` |
-| Unit tests | 78 passed | `pytest` |
+| Unit tests | 81 passed | `pytest` |
 | Cloud cluster | pendiente | requires provisioning |
 | Bedrock embeddings | pendiente | requires AWS model access |
