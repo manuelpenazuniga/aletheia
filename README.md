@@ -102,21 +102,30 @@ cp .env.example .env                  # fill in as needed; local defaults work o
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-docker compose up -d                  # local single-node CockroachDB
-./infra/apply_ddl.sh                  # create database + schema (infra/ddl.sql)
+./infra/apply_ddl.sh                  # starts the container, creates db + schema
 
 pytest                                # unit tests + architecture tests
 python smoke.py --local               # end-to-end write/read smoke against local CRDB
 ```
 
-Against the cloud cluster and real Bedrock embeddings:
+The DB Console is at <http://localhost:8081> (8081 rather than CockroachDB's usual
+8080, which is commonly already taken; override with `CRDB_UI_PORT`).
+
+Against the cloud cluster with real Bedrock embeddings:
 
 ```bash
 python smoke.py --cloud               # needs ALETHEIA_CRDB_DSN + AWS credentials
 ```
 
-`smoke.py` never falls back to fake data: if a credential or service is missing
-it fails loudly. See `CLAUDE.md` §3.
+`smoke.py` has two real modes and no fake one. `--local` uses a seeded, documented
+offline embedder so the loop can run without spending cloud credit; `--cloud` uses
+Amazon Bedrock Titan. If a credential or service is missing, it fails loudly with
+the remediation step rather than degrading to synthetic vectors. See `CLAUDE.md` §3.
+
+What the local smoke run proves end to end: serializable isolation, `memories` and
+`provenance` written in one transaction, 1024-dimension vectors round-tripping, the
+C-SPANN index actually serving nearest-neighbour search (verified via `EXPLAIN`),
+and `supersede` preserving the row instead of deleting it.
 
 ## Repository layout
 
