@@ -1,0 +1,31 @@
+# Local CockroachDB for development — so we do not burn cloud credits on every
+# unit-test loop. This is a single insecure node: it is NOT the topology the
+# resilience experiment (E2) runs against, and it is never used for published
+# numbers.
+#
+#   docker compose up -d
+#   ./infra/apply_ddl.sh
+#   docker compose down -v      # wipe
+#
+# Keep CRDB_IMAGE_TAG aligned with the CockroachDB Cloud cluster version once it
+# is provisioned, so local and cloud agree on VECTOR / vector-index behaviour.
+
+services:
+  crdb:
+    image: cockroachdb/cockroach:${CRDB_IMAGE_TAG:-v25.4.13}
+    container_name: aletheia-crdb
+    command: start-single-node --insecure --http-addr=0.0.0.0:8080
+    ports:
+      - "${CRDB_SQL_PORT:-26257}:26257" # SQL / pgwire
+      - "${CRDB_UI_PORT:-8080}:8080" # DB Console
+    volumes:
+      - crdb-data:/cockroach/cockroach-data
+    healthcheck:
+      test: ["CMD", "cockroach", "sql", "--insecure", "-e", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  crdb-data:
