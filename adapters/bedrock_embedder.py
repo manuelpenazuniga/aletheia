@@ -50,7 +50,15 @@ class BedrockEmbedder:
             except ImportError as exc:  # pragma: no cover - boto3 is a declared dep
                 raise BedrockUnavailable("boto3 is not installed: pip install -e '.[dev]'") from exc
             kwargs = {"region_name": self._region} if self._region else {}
-            self._client = boto3.client("bedrock-runtime", **kwargs)
+            try:
+                self._client = boto3.client("bedrock-runtime", **kwargs)
+            except Exception as exc:
+                raise BedrockUnavailable(
+                    f"could not create a bedrock-runtime client: {exc}\n"
+                    "Check AWS_REGION and, if set, that AWS_PROFILE names a profile that "
+                    "exists in ~/.aws/config (an empty AWS_PROFILE= line in .env is a "
+                    "common cause)."
+                ) from exc
         return self._client
 
     def embed(self, text: str) -> list[float]:
