@@ -17,7 +17,9 @@ services:
     command: start-single-node --insecure --http-addr=0.0.0.0:8080
     ports:
       - "${CRDB_SQL_PORT:-26257}:26257" # SQL / pgwire
-      - "${CRDB_UI_PORT:-8080}:8080" # DB Console
+      # 8081 rather than CockroachDB's usual 8080: that port is too often taken
+      # by something else on a dev machine. Override with CRDB_UI_PORT.
+      - "${CRDB_UI_PORT:-8081}:8080" # DB Console -> http://localhost:8081
     volumes:
       - crdb-data:/cockroach/cockroach-data
     healthcheck:

@@ -25,4 +25,13 @@ if [[ "$DSN" == *localhost* || "$DSN" == *127.0.0.1* ]]; then
   done
 fi
 
-exec python infra/apply_ddl.py --dsn "$DSN"
+# Prefer the project virtualenv, then whatever python is on PATH.
+if [ -x .venv/bin/python ]; then
+  PYTHON=.venv/bin/python
+elif command -v python >/dev/null 2>&1; then
+  PYTHON=python
+else
+  PYTHON=python3
+fi
+
+exec "$PYTHON" infra/apply_ddl.py --dsn "$DSN"
