@@ -1,0 +1,35 @@
+# --- secrets (NEVER commit) ---
+.env
+.env.local
+*.pem
+*.key
+secrets/
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# --- tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- local runtime artifacts ---
+cockroach-data/
+*.log
+.DS_Store
+
+# --- experiment scratch (results of record live in CockroachDB + docs/results.md) ---
+scratch/
