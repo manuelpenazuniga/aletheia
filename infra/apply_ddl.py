@@ -92,9 +92,7 @@ def verify(dsn: str) -> bool:
 
     ok = True
     with psycopg.connect(dsn, autocommit=True) as conn:
-        rows = conn.execute(
-            "SELECT table_name FROM [SHOW TABLES] ORDER BY table_name"
-        ).fetchall()
+        rows = conn.execute("SELECT table_name FROM [SHOW TABLES] ORDER BY table_name").fetchall()
         present = {r[0] for r in rows}
         for table in EXPECTED_TABLES:
             mark = "ok " if table in present else "MISSING"

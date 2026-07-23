@@ -1,2 +1,1 @@
-"""AWS Lambda handlers: consolidation cycle and gossip tick.
-"""
+"""AWS Lambda handlers: consolidation cycle and gossip tick."""

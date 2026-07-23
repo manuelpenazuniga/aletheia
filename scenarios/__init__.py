@@ -1,2 +1,1 @@
-"""Seeded, committed datasets: incident corpus, distributed clues, poison suite.
-"""
+"""Seeded, committed datasets: incident corpus, distributed clues, poison suite."""

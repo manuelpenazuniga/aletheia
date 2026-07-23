@@ -1,2 +1,1 @@
-"""Storage adapters implementing core.adapter.StorageAdapter.
-"""
+"""Storage adapters implementing core.adapter.StorageAdapter."""

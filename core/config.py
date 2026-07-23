@@ -123,9 +123,7 @@ class AletheiaConfig:
             retrieval_budget_tokens=_env_int("ALETHEIA_RETRIEVAL_BUDGET_TOKENS", 4000),
             embedding_dim=_env_int("ALETHEIA_EMBEDDING_DIM", DEFAULT_EMBEDDING_DIM),
             model_id=_env_str("ALETHEIA_MODEL_ID", DEFAULT_MODEL_ID),
-            embedding_model_id=_env_str(
-                "ALETHEIA_EMBEDDING_MODEL_ID", DEFAULT_EMBEDDING_MODEL_ID
-            ),
+            embedding_model_id=_env_str("ALETHEIA_EMBEDDING_MODEL_ID", DEFAULT_EMBEDDING_MODEL_ID),
             temperature=_env_float("ALETHEIA_TEMPERATURE", 0.2),
             seed=_env_int("ALETHEIA_SEED", 0),
         )
