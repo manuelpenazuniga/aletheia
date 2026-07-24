@@ -11,7 +11,7 @@
 # with real Raft replication (default 3 replicas, so quorum survives losing one).
 # `docker kill` on a container is a genuine, ungraceful node loss.
 #
-# CLAUDE.md §11 authorises exactly this and attaches one condition, which is not
+# the project plan §11 authorises exactly this and attaches one condition, which is not
 # optional: the video must SAY OUT LOUD that the kill happens on a self-operated
 # three-node cluster and why. Never fake a kill; never let a viewer assume this
 # was the managed cluster.

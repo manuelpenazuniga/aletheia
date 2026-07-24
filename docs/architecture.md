@@ -1,7 +1,7 @@
 # Aletheia — architecture
 
 > Status: Phase 0 (foundations). Components marked *planned* land in Phases 1–2
-> per CLAUDE.md §10.
+> per the project plan §10.
 
 ## 1. The shape of the system
 
@@ -162,14 +162,14 @@ the coincidence that L2 and cosine rank unit-length vectors identically.
 
 CockroachDB Cloud manages nodes and does not expose node termination, so E2 runs
 against a self-operated three-node cluster (`docker-compose.chaos.yml`) where a
-kill is genuine. Authorised by CLAUDE.md §11, with its condition: **the video must
+kill is genuine. Authorised by the project plan §11, with its condition: **the video must
 say so out loud**. See §11 below.
 
 ## 9. Still open
 
 1. **Bedrock model ids.** `core/config.py` carries best-guess defaults; the exact
    ids and their availability in the target region must be confirmed in the
-   Bedrock console before any experimental run (CLAUDE.md §11).
+   Bedrock console before any experimental run (the project plan §11).
 
 2. **Cluster version alignment.** Local development pins
    `CRDB_IMAGE_TAG=v25.4.13`; align it with whatever version CockroachDB Cloud
@@ -187,7 +187,7 @@ say so out loud**. See §11 below.
 
 Recorded here so they are not rediscovered late. Neither is implemented yet.
 
-1. **E3b — external validation on LongMemEval** (CLAUDE.md §8.1, §8.4). The
+1. **E3b — external validation on LongMemEval** (the project plan §8.1, §8.4). The
    knowledge-update arms (`A0_full`, `A1_no_consolidation`, `BL_rag`) are replayed
    on a stratified subset of the public LongMemEval benchmark, restricted to the
    *knowledge-update* and *temporal-reasoning* categories — the full benchmark is
@@ -197,7 +197,7 @@ Recorded here so they are not rediscovered late. Neither is implemented yet.
    Phase 3: how the benchmark's conversational sessions map onto `MemoryEvent`
    provenance, since LongMemEval has no notion of which agent observed what.
 
-2. **Ablation wall — live fleets or synchronised replays** (CLAUDE.md §9.1.6,
+2. **Ablation wall — live fleets or synchronised replays** (the project plan §9.1.6,
    §10 Phase 4). A four-panel grid — `full`, `−consolidation`, `−immune`,
    `−forgetting` — running the same scenario under the same seed and diverging
    under the same events. Four live fleets is the stronger demonstration; four
@@ -205,7 +205,7 @@ Recorded here so they are not rediscovered late. Neither is implemented yet.
    deferred to Phase 4 and must be taken on the token cost actually measured in
    Phase 3, then **documented in the README and stated in the video** — a replay
    presented as a live fleet would be exactly the kind of disguised mock
-   CLAUDE.md §3.2 forbids. Either way the wall reads the four ablations from the
+   the project plan §3.2 forbids. Either way the wall reads the four ablations from the
    same feature flags in `AletheiaConfig`; no new configuration surface.
 
 ## 11. The chaos cluster (E2)
@@ -232,7 +232,7 @@ to work through the surviving two nodes. The measured version — writes in flig
 memories lost, integrity checksums taken before the event and verified after,
 recovery time — is E2 in Phase 3, and populates table R2.
 
-**The condition attached to this choice is not optional** (CLAUDE.md §11): the
+**The condition attached to this choice is not optional** (the project plan §11): the
 video and the README must state plainly that the kill happens on a self-operated
 three-node cluster, and why. A viewer must never be left to assume it was the
 managed cluster. Faking a kill would be disqualifying; explaining an honest

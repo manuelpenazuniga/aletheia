@@ -1,4 +1,4 @@
-"""The storage contract every backend must satisfy (CLAUDE.md §7). Frozen.
+"""The storage contract every backend must satisfy (the project plan §7). Frozen.
 
 `InMemoryAdapter` (tests, fast iteration) and `CockroachDBAdapter` (production,
 vector index, serializable transactions) both implement this protocol. The memory
@@ -61,7 +61,7 @@ class AgentNotRegistered(AdapterError):
 
 @runtime_checkable
 class StorageAdapter(Protocol):
-    """Storage backend contract. The signatures below are frozen by CLAUDE.md §7."""
+    """Storage backend contract. The signatures below are frozen by the project plan §7."""
 
     # -- §7 contract ----------------------------------------------------------
     def write_episode(self, agent_id: str, event: MemoryEvent) -> str:

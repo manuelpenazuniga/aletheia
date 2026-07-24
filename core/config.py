@@ -1,6 +1,6 @@
 """Aletheia configuration and feature flags.
 
-The contract in CLAUDE.md §7 is frozen here. Two rules govern this module:
+The contract in the project plan §7 is frozen here. Two rules govern this module:
 
 1. **Feature flags first.** Every major component (consolidation, forgetting,
    gossip, immune) ships behind its flag from the first commit. The experimental
@@ -22,10 +22,10 @@ from types import MappingProxyType
 from typing import Any
 
 # Bedrock model ids differ per region and inference-profile ids carry a `us.`
-# prefix. CLAUDE.md §7 carries a placeholder ("anthropic.claude-sonnet-4-6") with
+# prefix. the project plan §7 carries a placeholder ("anthropic.claude-sonnet-4-6") with
 # an explicit instruction to verify the exact id in the Bedrock console; these
 # defaults are the current best guess and MUST be confirmed for the target region
-# before any experimental run (CLAUDE.md §11).
+# before any experimental run (the project plan §11).
 DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 DEFAULT_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 
@@ -85,7 +85,7 @@ class AletheiaConfig:
     :meth:`with_overrides`.
     """
 
-    # --- feature flags (CLAUDE.md §7; the four ablation switches) -------------
+    # --- feature flags (the project plan §7; the four ablation switches) -------------
     enable_consolidation: bool = True
     enable_forgetting: bool = True
     enable_gossip: bool = True

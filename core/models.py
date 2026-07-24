@@ -1,4 +1,4 @@
-"""Core domain models (CLAUDE.md §7). Frozen contract.
+"""Core domain models (the project plan §7). Frozen contract.
 
 These are the only types that cross the boundary between the memory logic and a
 :class:`core.adapter.StorageAdapter`. They mirror the schema in infra/ddl.sql
@@ -33,7 +33,7 @@ class MemoryStatus(StrEnum):
     """`memories.status`.
 
     Nothing is ever deleted: quarantine and supersede are status transitions, so
-    the audit trail survives (CLAUDE.md §6 rule (a)).
+    the audit trail survives (the project plan §6 rule (a)).
     """
 
     ACTIVE = "active"

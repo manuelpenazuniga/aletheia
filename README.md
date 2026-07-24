@@ -88,7 +88,7 @@ Full diagram: [`docs/architecture.md`](docs/architecture.md).
 
 ## Results
 
-Experiments are pre-registered in `CLAUDE.md` §8 (E1 concurrency, E2 chaos,
+Experiments are pre-registered in the project plan §8 (E1 concurrency, E2 chaos,
 E3 knowledge-update, E4 poisoning, E5 cost). Tables R1–R3 are populated **only**
 with real numbers from real runs; unrun cells say `pendiente`.
 
@@ -149,7 +149,7 @@ docker kill aletheia-chaos-2          # a real node loss: SIGKILL, no drain
 `smoke.py` has two real modes and no fake one. `--local` uses a seeded, documented
 offline embedder so the loop can run without spending cloud credit; `--cloud` uses
 Amazon Bedrock Titan. If a credential or service is missing, it fails loudly with
-the remediation step rather than degrading to synthetic vectors. See `CLAUDE.md` §3.
+the remediation step rather than degrading to synthetic vectors. See the project plan §3.
 
 What the local smoke run proves end to end: serializable isolation, `memories` and
 `provenance` written in one transaction, 1024-dimension vectors round-tripping, the

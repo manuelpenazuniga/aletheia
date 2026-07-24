@@ -1,5 +1,5 @@
 -- =============================================================================
--- Aletheia — full schema (CLAUDE.md §6). Source of truth for the memory layer.
+-- Aletheia — full schema (the project plan §6). Source of truth for the memory layer.
 --
 -- Apply with:  ./infra/apply_ddl.sh          (local docker or cloud, via DSN)
 --

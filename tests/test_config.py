@@ -1,4 +1,4 @@
-"""AletheiaConfig: the frozen contract of CLAUDE.md §7."""
+"""AletheiaConfig: the frozen contract of the project plan §7."""
 
 from __future__ import annotations
 

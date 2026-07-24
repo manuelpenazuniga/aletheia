@@ -1,6 +1,6 @@
 # Results
 
-> **Integrity policy (CLAUDE.md §3.1, §8.6).** Every cell in this document is
+> **Integrity policy (the project plan §3.1, §8.6).** Every cell in this document is
 > populated only from a real run. Cells that have not been run say `pendiente`.
 > The ▲/▼ markers are **predictions registered before running**. If a prediction
 > does not hold, the real value is reported with a note; re-running until the
@@ -48,7 +48,7 @@ stops entirely.
 termination, so E2 runs against a self-operated three-node cluster
 (`docker-compose.chaos.yml`): real nodes, real Raft replication, `num_replicas = 3`,
 and `docker kill` (SIGKILL, no drain). Every other experiment runs against
-CockroachDB Cloud. Decided 2026-07-24 under CLAUDE.md §11, which authorises this
+CockroachDB Cloud. Decided 2026-07-24 under the project plan §11, which authorises this
 substitution on the condition that it is stated openly — here, in the README and
 in the video.
 

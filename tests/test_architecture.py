@@ -1,7 +1,7 @@
-"""Architectural invariants — the rules that CLAUDE.md says must never break.
+"""Architectural invariants — the rules that the project plan says must never break.
 
 These are cheap tests guarding expensive mistakes. The portability of ``core/``
-is a stated strategic asset (CLAUDE.md §7): once an infrastructure import leaks
+is a stated strategic asset (the project plan §7): once an infrastructure import leaks
 in, it leaks in everywhere and is painful to reverse.
 """
 
@@ -69,7 +69,7 @@ def test_core_never_imports_infrastructure():
         if forbidden:
             offenders.append(f"{module.relative_to(REPO_ROOT)}: {sorted(forbidden)}")
     assert not offenders, (
-        "core/ must stay portable (CLAUDE.md §7). Move infrastructure behind a "
+        "core/ must stay portable (the project plan §7). Move infrastructure behind a "
         "StorageAdapter or an injected callback:\n  " + "\n  ".join(offenders)
     )
 
@@ -141,7 +141,7 @@ def test_vector_index_is_prefixed_by_status_and_uses_cosine():
 
 
 def test_no_query_uses_the_l2_operator():
-    """`<->` is L2 and would silently bypass the cosine index (CLAUDE.md §8.2 decision).
+    """`<->` is L2 and would silently bypass the cosine index (the project plan §8.2 decision).
 
     L2 and cosine happen to rank unit-length vectors identically, so a drift here
     would not fail a test elsewhere — it would just quietly stop using the index.
@@ -158,7 +158,7 @@ def test_no_query_uses_the_l2_operator():
 
 
 def test_ddl_never_deletes():
-    """Nothing in the schema or its tooling may DELETE memory rows (CLAUDE.md §6a)."""
+    """Nothing in the schema or its tooling may DELETE memory rows (the project plan §6a)."""
     ddl = (REPO_ROOT / "infra" / "ddl.sql").read_text().lower()
     assert "on delete cascade" not in ddl
     assert "delete from" not in ddl

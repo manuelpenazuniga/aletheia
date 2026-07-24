@@ -7,7 +7,7 @@ meet the embedding contract. The core receives it as a
 Fails loudly. If credentials, region or model access are missing it raises with
 the exact remediation step — it never falls back to a synthetic vector, because a
 silently fake embedding would corrupt every number the project reports
-(CLAUDE.md §3.1, §3.2).
+(the project plan §3.1, §3.2).
 """
 
 from __future__ import annotations

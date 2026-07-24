@@ -5,7 +5,7 @@ retained active footprint exceeds ``AletheiaConfig.memory_budget_tokens`` this
 cycle archives the lowest-value active memories — one at a time, cheapest first —
 until the footprint is back under budget. Archiving is a status transition that
 runs the injected S3 offload callback before flipping the row to ``archived``:
-nothing is ever destroyed (CLAUDE.md §6a).
+nothing is ever destroyed (the project plan §6a).
 
 Value decays with disuse — the "metabolic" part: a memory the fleet keeps
 retrieving stays alive; stale, unused, low-importance memory is shed first.

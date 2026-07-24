@@ -29,7 +29,7 @@ logger.setLevel(logging.INFO)
 
 
 def _log(op: str, **fields: Any) -> None:
-    """Structured JSON logging, the observability contract of CLAUDE.md §3.8."""
+    """Structured JSON logging, the observability contract of the project plan §3.8."""
     logger.info(json.dumps({"op": op, **fields}))
 
 

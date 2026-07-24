@@ -7,7 +7,7 @@ That keeps the core portable and lets tests run offline and reproducibly.
 :class:`DeterministicEmbedder` is **not** a mock standing in for a real model in
 any user-facing path: it is a real, documented, seeded feature-hashing embedder
 used for unit tests and offline local development. Anything shown in the demo or
-reported as a result uses Titan (CLAUDE.md §3.2).
+reported as a result uses Titan (the project plan §3.2).
 """
 
 from __future__ import annotations

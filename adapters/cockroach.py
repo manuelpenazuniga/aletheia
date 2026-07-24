@@ -5,7 +5,7 @@ This is the production backend. It reproduces the *observable* behaviour of
 while adding the two things the in-memory store cannot give: durable, distributed
 storage and genuine serializable concurrency control. Every write of a memory and
 its provenance happens in one serializable transaction, so a reader never sees a
-vector without its operational row (CLAUDE.md §6 rule (b) — the CockroachDB
+vector without its operational row (the project plan §6 rule (b) — the CockroachDB
 argument).
 
 Design notes

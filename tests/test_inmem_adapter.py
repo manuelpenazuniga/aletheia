@@ -352,7 +352,7 @@ def test_archive_leaves_the_memory_active_if_the_offload_fails(counter_ids, embe
 
 
 def test_nothing_is_ever_deleted(adapter, make_event):
-    """Every transition keeps the row reachable by id (CLAUDE.md §6 rule a)."""
+    """Every transition keeps the row reachable by id (the project plan §6 rule a)."""
     ids = [adapter.write_episode("sre-1", make_event(f"memory {i}")) for i in range(3)]
     adapter.supersede(ids[0], ids[1])
     adapter.quarantine(ids[1], QuarantineReason.BAD_PROVENANCE, "hmac", {})

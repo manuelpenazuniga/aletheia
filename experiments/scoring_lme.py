@@ -1,8 +1,8 @@
 """Scoring adapter for the LongMemEval subset (experiment E3b).
 
-Placeholder: implemented in Phase 3 (CLAUDE.md §10), after E3 closes on the
+Placeholder: implemented in Phase 3 (the project plan §10), after E3 closes on the
 synthetic incident corpus. The module exists from now so the layout matches
-CLAUDE.md §8.4 and so the open questions are recorded where they will be needed.
+the project plan §8.4 and so the open questions are recorded where they will be needed.
 
 What this module will do
 ------------------------
@@ -28,7 +28,7 @@ TODO(phase-3):
 
 Deliberately unimplemented rather than stubbed with plausible-looking numbers:
 an invented external-validation figure would be the single most damaging thing
-this project could publish (CLAUDE.md §3.1).
+this project could publish (the project plan §3.1).
 """
 
 from __future__ import annotations

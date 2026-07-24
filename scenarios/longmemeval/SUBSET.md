@@ -1,7 +1,7 @@
 # LongMemEval subset — E3b external validation
 
 > **Status: placeholder. The subset has not been selected yet.** Selection happens
-> in Phase 3 (CLAUDE.md §10), after E3 closes on the synthetic corpus. Until then
+> in Phase 3 (the project plan §10), after E3 closes on the synthetic corpus. Until then
 > every table below says `pendiente`, and no LongMemEval number appears anywhere
 > in `docs/results.md`.
 
@@ -11,7 +11,7 @@ E3 measures knowledge-update on our own synthetic SRE incident corpus. A jury ha
 no reason to trust an effect measured only on a dataset we wrote ourselves. E3b
 replays the same arms (`A0_full`, `A1_no_consolidation`, `BL_rag`) on a
 **public, recognised benchmark**, so the claim becomes falsifiable by someone
-else. If the effect does not replicate, that is reported as-is (CLAUDE.md §8.6).
+else. If the effect does not replicate, that is reported as-is (the project plan §8.6).
 
 ## Scope
 

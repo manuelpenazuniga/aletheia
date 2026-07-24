@@ -31,7 +31,7 @@ EXPECTED_TABLES = [
 
 
 def _redact(dsn: str) -> str:
-    """Never print a password. CLAUDE.md §3.4.
+    """Never print a password. the project plan §3.4.
 
     Covers both URI userinfo (``//user:pw@``) and the query-string /
     keyword-conninfo forms (``password=...``, ``pw=...``), so a DSN that carries

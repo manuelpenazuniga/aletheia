@@ -1,6 +1,6 @@
 """The ingest write-path service (FastAPI) — the sole holder of DB write creds.
 
-Separation of paths (CLAUDE.md §5.3): agents *read* through the managed MCP
+Separation of paths (the project plan §5.3): agents *read* through the managed MCP
 server (read-only) and *write* only through this service, which fronts the
 database with authentication, the immune gate, and a single atomic write. The
 managed MCP is never given write access; this validated write path is the

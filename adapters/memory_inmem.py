@@ -180,7 +180,7 @@ class InMemoryAdapter:
         Results are ordered by ascending distance and accumulated until the next
         hit would exceed ``budget_tokens``; accumulation stops there rather than
         skipping ahead to smaller hits, so the truncation stays deterministic and
-        identical across experimental arms (CLAUDE.md §8.7).
+        identical across experimental arms (the project plan §8.7).
         """
         self._check_dim(vec)
         if k <= 0 or budget_tokens <= 0:

@@ -1,6 +1,6 @@
 """End-to-end smoke test: write and read one memory, with a real embedding.
 
-This is the Phase 0 acceptance criterion (CLAUDE.md §10). It proves the whole
+This is the Phase 0 acceptance criterion (the project plan §10). It proves the whole
 vertical slice is wired: configuration -> embedder -> serializable transaction ->
 `memories` + `provenance` -> vector search over the C-SPANN index -> read back.
 
@@ -15,7 +15,7 @@ Two modes, both real, neither faked:
 * ``--cloud`` uses Amazon Bedrock Titan embeddings against the cloud cluster.
   This is the mode the acceptance criterion refers to. If credentials, region or
   model access are missing it fails loudly with the remediation step — it does
-  not degrade to the deterministic embedder (CLAUDE.md §3.1, §3.2).
+  not degrade to the deterministic embedder (the project plan §3.1, §3.2).
 
 Rows written here are smoke fixtures, not fleet memory, and are removed at the
 end unless ``--keep`` is passed. The "nothing is ever deleted" rule governs
