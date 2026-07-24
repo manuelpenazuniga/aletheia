@@ -16,7 +16,9 @@ This module is part of the portable core: no boto3, no psycopg, no network.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
+from types import MappingProxyType
 from typing import Any
 
 # Bedrock model ids differ per region and inference-profile ids carry a `us.`
@@ -32,11 +34,23 @@ DEFAULT_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 DEFAULT_EMBEDDING_DIM = 1024
 
 
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off"}
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None or raw == "":
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    value = raw.strip().lower()
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    # Fail loud on a typo. The previous behaviour treated any unrecognized
+    # string as false, which would silently DISABLE a security-relevant flag —
+    # e.g. ALETHEIA_ENABLE_IMMUNE=treu turning off the immune gate.
+    raise ConfigError(f"{name}={raw!r} is not a boolean; use one of {sorted(_TRUE | _FALSE)}")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -103,9 +117,14 @@ class AletheiaConfig:
     immune_anomaly_threshold: float = 0.85
 
     #: Free-form, non-behavioural labels (experiment arm name, run tags).
-    labels: dict[str, str] = field(default_factory=dict)
+    #: Exposed as a read-only mapping — see __post_init__.
+    labels: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # A frozen dataclass freezes the fields, not the dict a field points to.
+        # Wrap labels in a read-only view over a private copy so the config is
+        # genuinely immutable and two runs cannot share (and mutate) one dict.
+        object.__setattr__(self, "labels", MappingProxyType(dict(self.labels)))
         self.validate()
 
     # -- construction ---------------------------------------------------------
@@ -171,5 +190,11 @@ class AletheiaConfig:
         return "A0_full" if not disabled else "no_" + "_".join(disabled)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serializable snapshot, recorded with every experiment run."""
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        """Serializable snapshot, recorded with every experiment run.
+
+        ``labels`` is returned as a fresh plain dict so the snapshot is JSON-ready
+        and mutating it cannot reach back into the (frozen) config.
+        """
+        snapshot = {f.name: getattr(self, f.name) for f in fields(self)}
+        snapshot["labels"] = dict(self.labels)
+        return snapshot

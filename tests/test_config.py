@@ -91,6 +91,42 @@ def test_from_env_reads_flags_and_budget(monkeypatch):
     assert cfg.model_id == "some.model:1"
 
 
+def test_from_env_rejects_a_malformed_boolean(monkeypatch):
+    """A typo must fail loudly, not silently disable a security flag."""
+    monkeypatch.setenv("ALETHEIA_ENABLE_IMMUNE", "treu")
+    with pytest.raises(ConfigError, match="not a boolean"):
+        AletheiaConfig.from_env()
+
+
+def test_from_env_accepts_common_false_spellings(monkeypatch):
+    for spelling in ("off", "no", "FALSE", "0"):
+        monkeypatch.setenv("ALETHEIA_ENABLE_GOSSIP", spelling)
+        assert AletheiaConfig.from_env().enable_gossip is False
+
+
+def test_labels_are_read_only(monkeypatch):
+    cfg = AletheiaConfig(labels={"arm": "A0"})
+    assert cfg.labels["arm"] == "A0"
+    with pytest.raises(TypeError):
+        cfg.labels["arm"] = "tampered"  # type: ignore[index]
+
+
+def test_to_dict_labels_is_a_detached_copy():
+    cfg = AletheiaConfig(labels={"arm": "A0"})
+    snapshot = cfg.to_dict()
+    snapshot["labels"]["arm"] = "tampered"
+    assert cfg.labels["arm"] == "A0"
+
+
+def test_two_configs_do_not_share_a_labels_dict():
+    shared = {"arm": "A0"}
+    a = AletheiaConfig(labels=shared)
+    b = AletheiaConfig(labels=shared)
+    shared["arm"] = "mutated-after"
+    assert a.labels["arm"] == "A0"
+    assert b.labels["arm"] == "A0"
+
+
 def test_from_env_ignores_empty_values(monkeypatch):
     """An unfilled line in .env must not override a default with garbage."""
     monkeypatch.setenv("ALETHEIA_MODEL_ID", "")
