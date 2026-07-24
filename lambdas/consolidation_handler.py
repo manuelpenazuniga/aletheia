@@ -1,12 +1,14 @@
 """AWS Lambda entry point for the consolidation cycle (C2).
 
-Phase 0 skeleton: it wires up configuration, the flag check and the structured
-logging contract, and it deliberately does **no** consolidation work yet — the
-logic lands in Phase 1 in ``core/consolidation.py`` and is called from here.
+The handler stays thin on purpose. All memory logic lives in the portable core
+(:func:`core.consolidation.consolidate`); this file only translates between the
+Lambda runtime and that core, so the same cycle can run from the experiment
+runner or the demo app without AWS.
 
-The handler stays thin on purpose. All memory logic lives in the portable core;
-this file only translates between the Lambda runtime and that core, so the same
-cycle can run from the experiment runner or the demo app without AWS.
+Because this module lives under ``lambdas/`` (not ``core/``), it may import the
+CockroachDB adapter directly — psycopg is fine here. The adapter is built lazily
+*inside* the handler from ``ALETHEIA_CRDB_DSN`` so the module stays importable
+without a database configured.
 
 Trigger: EventBridge schedule (every 10 minutes in the demo).
 """
@@ -20,6 +22,7 @@ import time
 from typing import Any
 
 from core.config import AletheiaConfig
+from core.consolidation import consolidate
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -39,17 +42,42 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         _log("consolidation.skipped", reason="flag_disabled", request_id=request_id)
         return {"status": "skipped", "reason": "enable_consolidation=false"}
 
-    # Phase 1: build the CockroachDB adapter from ALETHEIA_CRDB_DSN and call
-    # core.consolidation.run_cycle(adapter, cfg). Kept unimplemented rather than
-    # stubbed with fake counts — an invented metric is worse than a missing one.
+    dsn = os.environ.get("ALETHEIA_CRDB_DSN")
+    if not dsn:
+        _log(
+            "consolidation.error",
+            reason="missing_dsn",
+            request_id=request_id,
+            latency_ms=round((time.monotonic() - started) * 1000, 2),
+        )
+        raise RuntimeError(
+            "ALETHEIA_CRDB_DSN is not set; the consolidation cycle needs a "
+            "CockroachDB connection string to run"
+        )
+
+    # Import here, not at module top: keeps the module importable without psycopg
+    # or a live database, so the flag-off path and unit tests carry no infra cost.
+    from adapters.cockroach import CockroachDBAdapter
+
+    adapter = CockroachDBAdapter(dsn, embedding_dim=cfg.embedding_dim)
+    try:
+        summary = consolidate(adapter, cfg)
+    finally:
+        adapter.close()
+
+    latency_ms = round((time.monotonic() - started) * 1000, 2)
     _log(
-        "consolidation.not_implemented",
+        "consolidation.completed",
         request_id=request_id,
-        phase="1",
-        dsn_configured=bool(os.environ.get("ALETHEIA_CRDB_DSN")),
-        latency_ms=round((time.monotonic() - started) * 1000, 2),
+        groups=summary.groups,
+        supersedes=summary.supersedes,
+        canonical_updates=summary.canonical_updates,
+        latency_ms=latency_ms,
     )
-    raise NotImplementedError(
-        "the consolidation cycle lands in Phase 1 (core/consolidation.py); "
-        "this handler is the deployment skeleton"
-    )
+    return {
+        "status": "ok",
+        "groups": summary.groups,
+        "supersedes": summary.supersedes,
+        "canonical_updates": summary.canonical_updates,
+        "latency_ms": latency_ms,
+    }

@@ -23,11 +23,16 @@ def test_gossip_skips_when_the_flag_is_off(monkeypatch):
     assert result == {"status": "skipped", "reason": "enable_gossip=false"}
 
 
-def test_handlers_do_not_fake_work_while_unimplemented(monkeypatch):
-    """Better an explicit NotImplementedError than an invented metric."""
+def test_consolidation_fails_clearly_without_a_dsn(monkeypatch):
+    """Flag on but no database configured must fail loudly, not silently no-op."""
     monkeypatch.setenv("ALETHEIA_ENABLE_CONSOLIDATION", "true")
-    monkeypatch.setenv("ALETHEIA_ENABLE_GOSSIP", "true")
-    with pytest.raises(NotImplementedError, match="Phase 1"):
+    monkeypatch.delenv("ALETHEIA_CRDB_DSN", raising=False)
+    with pytest.raises(RuntimeError, match="ALETHEIA_CRDB_DSN"):
         consolidation_handler.handler({}, None)
+
+
+def test_gossip_does_not_fake_work_while_unimplemented(monkeypatch):
+    """Better an explicit NotImplementedError than an invented metric."""
+    monkeypatch.setenv("ALETHEIA_ENABLE_GOSSIP", "true")
     with pytest.raises(NotImplementedError, match="Phase 2"):
         gossip_handler.handler({}, None)
