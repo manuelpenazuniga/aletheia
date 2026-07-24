@@ -58,7 +58,7 @@ Integrity checksums are computed **before** the chaos event and verified after.
 |---|---:|---:|---:|---:|---|
 | kill node | pendiente | pendiente | pendiente | pendiente | pendiente |
 | kill region | pendiente | pendiente | pendiente | pendiente | pendiente |
-| baseline single-node, kill | pendiente | ALL (expected) | — | does not recover | no |
+| baseline single-node, kill | pendiente | pendiente (pred: unavailable during the event) | — | pendiente (pred: no auto-recovery) | pendiente (pred: no) |
 
 Note: whether a region kill is possible depends on the cluster plan. If the plan
 does not allow it, that is documented here and in the video rather than simulated.
@@ -131,6 +131,6 @@ do not appear in the tables above.
 | Superseded memory leaves search | immediately, no reindex | `smoke.py` re-queries after supersede |
 | Chaos cluster forms | 3 live nodes, `num_replicas = 3` | `chaos/verify_cluster.sh` |
 | Survives a real node kill | yes — writes + search + supersede continue | `docker kill` then `smoke.py` |
-| Unit tests | 106 passed | `pytest` |
+| Unit tests | 380 passed (snapshot) | `pytest` |
 | Cloud cluster | pendiente | requires provisioning |
 | Bedrock embeddings | pendiente | requires AWS model access |

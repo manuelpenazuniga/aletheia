@@ -303,26 +303,66 @@ def run_arm(
 ) -> list[Answer]:  # pragma: no cover - needs Bedrock + a cluster
     """Answer every subset item through the memory layer for one arm.
 
-    Writes each item's sessions via :func:`build_provenance`, lets consolidation
-    run under ``config``, retrieves within the budget, and asks the model. Requires
-    real embeddings and inference (Bedrock), so E3b RESULT cells stay ``pendiente``
-    here — this is the live path, never exercised offline, and it fabricates
-    nothing.
+    Writes each item's sessions via :func:`build_provenance` (registering each
+    synthetic author first), runs the consolidation cycle when the arm enables it
+    (the sole A0-vs-A1 difference), retrieves as a registered reader within the
+    budget, and asks the model via ``complete``. Requires real embeddings and
+    inference (Bedrock), so E3b RESULT cells stay ``pendiente`` here — this is the
+    live path, never exercised offline, and it fabricates nothing.
+
+    Isolation: for a clean per-question measurement the caller should pass an
+    adapter scoped to one item (or a fresh run_id) so earlier items' memories do
+    not leak into a later item's retrieval.
     """
+    # Imported here (live path): keeps the module importable + unit-testable
+    # without pulling the consolidation cycle or the model request type.
+    from agents.model_client import ModelRequest
+    from core.consolidation import consolidate
+
+    reader_id = f"lme-reader-s{seed}"
+    adapter.register_agent(reader_id, "sre", "lme-reader")
+
     answers: list[Answer] = []
     for item in items:
+        # Register each session's synthetic author BEFORE its writes — both real
+        # adapters reject an unregistered agent (the memories->agents FK), so the
+        # first write would otherwise raise.
         for session in item.sessions:
-            for event in build_provenance(session):
+            events = list(build_provenance(session))
+            for event in events:
+                adapter.register_agent(event.agent_id, "sre", "lme-session")
                 event.embedding = embedder.embed(event.content)
                 adapter.write_episode(event.agent_id, event)
+
+        # Run the consolidation cycle when the arm enables it — this is the ONLY
+        # thing that distinguishes A0_full from A1_no_consolidation, so E3b is
+        # meaningless without it (external review: A0 and A1 were identical).
+        if config.enable_consolidation:
+            consolidate(adapter, config)
+
+        # Retrieve as a registered reader (not an unregistered per-question agent),
+        # under the shared retrieval budget (§8.7 control).
         context = adapter.query_semantic(
-            f"lme:{item.qid}",
+            reader_id,
             embedder.embed(item.question),
             k=5,
             budget_tokens=config.retrieval_budget_tokens,
         )
-        text = model.answer(item.question, context)
-        answers.append(Answer(qid=item.qid, text=text))
+        prompt = "\n".join(f"- {hit.content}" for hit in context)
+        response = model.complete(
+            ModelRequest(
+                system=(
+                    "Answer the question using ONLY the retrieved memory below. "
+                    "Prefer the most recent fact if they conflict."
+                ),
+                messages=[
+                    {"role": "user", "content": f"Memory:\n{prompt}\n\nQuestion: {item.question}"}
+                ],
+                tag=item.qid,
+                temperature=config.temperature,
+            )
+        )
+        answers.append(Answer(qid=item.qid, text=response.text))
     return answers
 
 
