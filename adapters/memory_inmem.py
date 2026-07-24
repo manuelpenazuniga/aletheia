@@ -236,6 +236,32 @@ class InMemoryAdapter:
         with self._lock:
             return self._copy(self._require_memory(mem_id))
 
+    def list_memories(
+        self,
+        *,
+        status: MemoryStatus | str | None = MemoryStatus.ACTIVE,
+        kind: MemoryKind | str | None = None,
+        agent_id: str | None = None,
+    ) -> list[MemoryEvent]:
+        """Enumerate memories filtered by status/kind/agent — powers C2 and C3.
+
+        Filters are conjunctive; ``None`` on an axis means "no filter". Returns
+        copies in deterministic ascending ``(created_at, mem_id)`` order, matching
+        the tie-break ``read_recent``/``query_semantic`` use. (Extension.)
+        """
+        want_status = None if status is None else MemoryStatus(status)
+        want_kind = None if kind is None else MemoryKind(kind)
+        with self._lock:
+            matches = [
+                m
+                for m in self._memories.values()
+                if (want_status is None or MemoryStatus(m.status) == want_status)
+                and (want_kind is None or MemoryKind(m.kind) == want_kind)
+                and (agent_id is None or m.agent_id == agent_id)
+            ]
+        matches.sort(key=lambda m: (m.created_at, m.mem_id or ""))
+        return [self._copy(m) for m in matches]
+
     # ------------------------------------------------------ status transitions
     def supersede(self, old_mem_id: str, new_mem_id: str) -> None:
         if old_mem_id == new_mem_id:

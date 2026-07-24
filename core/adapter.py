@@ -24,7 +24,15 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from core.models import CanonicalFact, MemoryEvent, MemoryHit, MemoryStats, ProvenanceLink
+from core.models import (
+    CanonicalFact,
+    MemoryEvent,
+    MemoryHit,
+    MemoryKind,
+    MemoryStats,
+    MemoryStatus,
+    ProvenanceLink,
+)
 
 
 class AdapterError(RuntimeError):
@@ -117,4 +125,29 @@ class StorageAdapter(Protocol):
 
     def close(self) -> None:
         """Release backend resources. No-op for in-memory storage."""
+        ...
+
+    # Required by the consolidation cycle (C2) and metabolic forgetting (C3):
+    # both must enumerate the fleet's memories to compute the active footprint,
+    # rank prune candidates, and bucket episodes by fact key. A single shared
+    # extension serves both — do not add a second listing method.
+    def list_memories(
+        self,
+        *,
+        status: MemoryStatus | str | None = MemoryStatus.ACTIVE,
+        kind: MemoryKind | str | None = None,
+        agent_id: str | None = None,
+    ) -> list[MemoryEvent]:
+        """Enumerate stored memories, filtered conjunctively by status/kind/agent.
+
+        Filters are conjunctive; ``None`` on an axis means "no filter" (any
+        status, any kind, fleet-wide). ``status`` and ``kind`` accept the enum or
+        its string value, coerced the way :class:`~core.models.MemoryEvent` does.
+        Returns COPIES (never internal references), consistent with ``get_memory``
+        and ``read_recent``, in deterministic ascending ``(created_at, mem_id)``
+        order so consolidation and forgetting are reproducible.
+
+        Extension beyond §7. Backed by ``idx_mem_agent_status`` on the production
+        backend; the ``agent_id`` filter is there for future per-agent budgets.
+        """
         ...

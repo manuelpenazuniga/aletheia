@@ -12,7 +12,7 @@ import pytest
 
 from adapters.memory_inmem import InMemoryAdapter, cosine_distance
 from core.adapter import AgentNotRegistered, DuplicateMemory, MemoryNotFound
-from core.models import MemoryEvent, MemoryStatus, QuarantineReason
+from core.models import MemoryEvent, MemoryKind, MemoryStatus, QuarantineReason
 
 from .conftest import TEST_DIM
 
@@ -170,6 +170,59 @@ def test_retrieval_records_access(adapter, make_event, embedder):
     after = adapter.get_memory(mem_id)
     assert after.access_count == before.access_count + 1
     assert after.last_accessed >= before.last_accessed
+
+
+# ---------------------------------------------------------- list_memories
+
+
+def test_list_memories_filters_by_status_and_agent_independently(adapter, make_event):
+    a = adapter.write_episode("sre-1", make_event("keep active"))
+    b = adapter.write_episode("sre-1", make_event("to supersede"))
+    c = adapter.write_episode("sre-2", make_event("other agent", agent_id="sre-2"))
+    adapter.supersede(b, a)
+
+    active = adapter.list_memories(status=MemoryStatus.ACTIVE)
+    assert {m.mem_id for m in active} == {a, c}
+
+    superseded = adapter.list_memories(status=MemoryStatus.SUPERSEDED)
+    assert [m.mem_id for m in superseded] == [b]
+
+    all_of_sre1 = adapter.list_memories(status=None, agent_id="sre-1")
+    assert {m.mem_id for m in all_of_sre1} == {a, b}
+
+    active_sre1 = adapter.list_memories(status=MemoryStatus.ACTIVE, agent_id="sre-1")
+    assert {m.mem_id for m in active_sre1} == {a}
+
+
+def test_list_memories_filters_by_kind(adapter, make_event):
+    epi = adapter.write_episode("sre-1", make_event("episode", kind=MemoryKind.EPISODIC))
+    sem = adapter.write_episode("sre-1", make_event("generalisation", kind=MemoryKind.SEMANTIC))
+
+    episodic = adapter.list_memories(status=MemoryStatus.ACTIVE, kind=MemoryKind.EPISODIC)
+    assert {m.mem_id for m in episodic} == {epi}
+    semantic = adapter.list_memories(status=None, kind="semantic")
+    assert {m.mem_id for m in semantic} == {sem}
+
+
+def test_list_memories_returns_copies_not_references(adapter, make_event):
+    mem_id = adapter.write_episode("sre-1", make_event("original", meta={"k": "v"}))
+    listed = adapter.list_memories(status=None)[0]
+    listed.content = "tampered"
+    listed.meta["k"] = "tampered"
+    stored = adapter.get_memory(mem_id)
+    assert stored.content == "original"
+    assert stored.meta["k"] == "v"
+
+
+def test_list_memories_is_ordered_by_created_at_then_id(counter_ids, embedder):
+    store = InMemoryAdapter(embedding_dim=TEST_DIM, id_factory=counter_ids)
+    store.register_agent("sre-1", "sre", "hash")
+    ids = [
+        store.write_episode("sre-1", MemoryEvent(agent_id="sre-1", content=f"m{i}"))
+        for i in range(4)
+    ]
+    listed = [m.mem_id for m in store.list_memories(status=None)]
+    assert listed == ids  # ascending (created_at, mem_id)
 
 
 # ------------------------------------------------------- status transitions
