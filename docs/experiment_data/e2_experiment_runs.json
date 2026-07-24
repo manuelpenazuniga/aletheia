@@ -1,0 +1,45 @@
+[
+  {
+    "arm": "E2_baseline_single_kill",
+    "metrics": {
+      "arm": "E2_baseline_single_kill",
+      "authoritative": true,
+      "downtime_s": 12.0,
+      "dry_run": false,
+      "event": "kill_single_node",
+      "experiment": "E2",
+      "fleet_kept_operating": false,
+      "integrity_ok": true,
+      "memories_lost": 0,
+      "n_agents": 20,
+      "note": "single node has no failover: availability lost during the outage, data survives restart",
+      "pre_kill_protected_set": 567,
+      "recovery_s": null,
+      "writes_acknowledged": 614,
+      "writes_failed": 1938,
+      "writes_in_flight": 0
+    },
+    "seed": 0
+  },
+  {
+    "arm": "E2_crdb_3node_kill_node",
+    "metrics": {
+      "arm": "E2_crdb_3node_kill_node",
+      "authoritative": true,
+      "cluster": "docker-compose.chaos.yml (3 nodes, RF=3)",
+      "dry_run": false,
+      "event": "kill_node",
+      "experiment": "E2",
+      "fleet_kept_operating": true,
+      "integrity_ok": true,
+      "memories_lost": 0,
+      "n_agents": 20,
+      "pre_kill_protected_set": 25,
+      "recovery_s": 0.026,
+      "writes_acknowledged": 3249,
+      "writes_failed": 1,
+      "writes_in_flight": 3
+    },
+    "seed": 0
+  }
+]

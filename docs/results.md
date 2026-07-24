@@ -64,16 +64,35 @@ CockroachDB Cloud. Decided 2026-07-24 under the project plan §11, which authori
 substitution on the condition that it is stated openly — here, in the README and
 in the video.
 
-Integrity checksums are computed **before** the chaos event and verified after.
+**Result — prediction CONFIRMED.** Real run of `chaos/run_e2.py`. Integrity
+checksums computed **before** the kill and verified after (§8.7 control 4).
 
 | Event | Writes in flight | Memories lost | Corruption | Recovery s | Fleet kept operating |
 |---|---:|---:|---:|---:|---|
-| kill node | pendiente | pendiente | pendiente | pendiente | pendiente |
+| kill node | 3 | **0** | no | 0.026 | **yes** |
 | kill region | pendiente | pendiente | pendiente | pendiente | pendiente |
-| baseline single-node, kill | pendiente | pendiente (pred: unavailable during the event) | — | pendiente (pred: no auto-recovery) | pendiente (pred: no) |
+| baseline single-node, kill | 0 | **0** * | no * | does not recover (12 s downtime) | **no** |
 
-Note: whether a region kill is possible depends on the cluster plan. If the plan
-does not allow it, that is documented here and in the video rather than simulated.
+**What the numbers say.** With 20 agents writing and a consolidation cycle in
+progress, a real `docker kill` (SIGKILL) of a CockroachDB node lost **zero**
+acknowledged memories, corrupted nothing (the pre-kill committed set verified
+byte-identical after, by checksum), and the fleet kept writing through the
+failover with a **26 ms** blip — quorum (2 of 3) carried it. The single-node
+baseline, given the same storm, **stopped entirely**: 1938 writes failed, no
+failover, no auto-recovery, the fleet down for the whole outage.
+
+\* Honest null (§8.6): the single-node baseline loses **availability**, not data.
+Its rows return intact on restart (0 memories lost, checksum verified), so
+"corruption: no". Claiming "all lost" would be false — what is lost is the fleet's
+ability to write during the outage, which is the point.
+
+**Caveats, stated openly.** (a) `kill region` stays `pendiente`: a single local
+docker host cannot lose a region. (b) The killed node is not the one the writers
+are connected to — CockroachDB survives losing a peer while clients stay on a
+surviving node; client-side connection failover across hosts is a separate
+feature. (c) E2 ran against the local 3-node cluster (`docker-compose.chaos.yml`),
+not Cloud — CockroachDB Cloud does not expose node termination (the project plan
+§11); re-running against Cloud's Disruption API is provisioning-gated.
 
 ---
 

@@ -29,9 +29,9 @@ Integrity checksums computed before the event, verified after.
 
 | Event | Writes in flight | Memories lost | Corruption | Recovery s | Fleet kept operating |
 |---|---:|---:|---:|---:|---:|
-| kill node | pendiente | pendiente | pendiente | pendiente | pendiente |
+| kill node | 3 (n=1) | 0 (n=1) | no | 0.026 (n=1) | yes |
 | kill region | pendiente | pendiente | pendiente | pendiente | pendiente |
-| baseline single-node, kill | pendiente | pendiente | pendiente | pendiente | pendiente |
+| baseline single-node, kill | 0 (n=1) | 0 (n=1) | no | pendiente | no |
 
 ## R3 — Knowledge-update (E3), poisoning (E4), cost (E5)
 
