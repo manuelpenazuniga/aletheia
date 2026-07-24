@@ -19,6 +19,7 @@ from experiments.run import (
     CockroachRecorder,
     Deps,
     InMemoryRecorder,
+    RunRecord,
     RunnerError,
     build_dry_run_deps,
     build_live_deps,
@@ -115,6 +116,35 @@ def _deps(*, authoritative: bool = False, parallel: bool = False) -> Deps:
 # -----------------------------------------------------------------------------
 # E1 — dry run produces a well-formed metrics dict
 # -----------------------------------------------------------------------------
+
+
+def test_dry_run_is_never_authoritative_even_if_deps_claim_it():
+    """A dry run must carry authoritative=False whatever the deps say — the coupling
+    is enforced at run_once, not left to the caller (external review)."""
+    deps = _deps(authoritative=True)  # deps lie; the run is still a dry run
+    record = run_once(
+        "E1", "E1_crdb_serializable_n5", 0, deps=deps, recorder=InMemoryRecorder(), dry_run=True
+    )
+    assert record.metrics["dry_run"] is True
+    assert record.metrics["authoritative"] is False
+
+
+def test_cockroach_recorder_refuses_non_authoritative_rows():
+    """The run-of-record ledger takes only authoritative rows; a dry/pending row
+    fails loudly before any DB call (no cluster needed to prove the guard)."""
+    from datetime import UTC, datetime
+
+    rec = CockroachRecorder("postgresql://unused")
+    row = RunRecord(
+        run_id="r1",
+        arm="A0_full",
+        seed=0,
+        metrics={"authoritative": False, "dry_run": True, "ku_accuracy": 0.99},
+        started_at=datetime(2026, 8, 1, tzinfo=UTC),
+        finished_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    with pytest.raises(RunnerError, match="non-authoritative"):
+        rec.record(row)
 
 
 def test_e1_dry_run_metrics_are_well_formed():

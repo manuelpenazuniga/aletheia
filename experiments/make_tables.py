@@ -109,6 +109,12 @@ def _num(exp: str, arm: str, key: str) -> tuple[str, str, str, str]:
     return ("num", exp, arm, key)
 
 
+def _pct(exp: str, arm: str, key: str) -> tuple[str, str, str, str]:
+    """A rate stored as a fraction in [0,1] but rendered in a %-labelled column,
+    so 0.8 shows as 80, not 0.8 (external review: unit mismatch)."""
+    return ("pct", exp, arm, key)
+
+
 def _bool(exp: str, arm: str, key: str) -> tuple[str, str, str, str]:
     return ("bool", exp, arm, key)
 
@@ -236,9 +242,9 @@ _R3_ROWS: tuple[tuple[str, tuple[tuple[str, ...], ...]], ...] = (
         "A0 full",
         (
             _num("E3", "A0_full", "ku_accuracy"),
-            _num("E3", "A0_full", "stale_fact_rate"),
-            _num("E4", "A0_full", "detection_rate"),
-            _num("E4", "A0_full", "false_positive_rate"),
+            _pct("E3", "A0_full", "stale_fact_rate"),
+            _pct("E4", "A0_full", "detection_rate"),
+            _pct("E4", "A0_full", "false_positive_rate"),
             _num("E5", "A0_full", "tokens_per_query"),
             _num("E5", "A0_full", "task_success"),
         ),
@@ -247,7 +253,7 @@ _R3_ROWS: tuple[tuple[str, tuple[tuple[str, ...], ...]], ...] = (
         "A1 -consolidation",
         (
             _num("E3", "A1_no_consolidation", "ku_accuracy"),
-            _num("E3", "A1_no_consolidation", "stale_fact_rate"),
+            _pct("E3", "A1_no_consolidation", "stale_fact_rate"),
             NA,
             NA,
             NA,
@@ -259,7 +265,7 @@ _R3_ROWS: tuple[tuple[str, tuple[tuple[str, ...], ...]], ...] = (
         (
             NA,
             NA,
-            _num("E4", "A4_no_immune", "detection_rate"),
+            _pct("E4", "A4_no_immune", "detection_rate"),
             NA,
             NA,
             _num("E4", "A4_no_immune", "task_success"),
@@ -280,7 +286,7 @@ _R3_ROWS: tuple[tuple[str, tuple[tuple[str, ...], ...]], ...] = (
         "BL plain RAG",
         (
             _num("E3", "BL_rag", "ku_accuracy"),
-            _num("E3", "BL_rag", "stale_fact_rate"),
+            _pct("E3", "BL_rag", "stale_fact_rate"),
             NA,
             NA,
             _num("E3", "BL_rag", "tokens_per_query"),
@@ -372,21 +378,51 @@ class Agg:
     unknown: Sequence[Run] = field(default_factory=tuple)
 
 
+def _is_authoritative(metrics: Mapping[str, Any]) -> bool:
+    """A row may enter the results tables ONLY if it is an authoritative, non-dry
+    run of record. A smoke/dry row, or one lacking the flag, is excluded — no
+    fake or provisional number can be rendered as a result (external review:
+    make_tables must not trust an arbitrary row). Defense-in-depth: the runner
+    already refuses to persist non-authoritative rows via the live recorder."""
+    return metrics.get("authoritative") is True and metrics.get("dry_run") is not True
+
+
 def aggregate(runs: Iterable[Run]) -> Agg:
     """Group runs by ``(experiment, arm)``, splitting off any unknown cell.
 
-    Pure: no I/O, no fabrication. A run missing an ``exp`` (no reserved key in its
-    metrics) can match no known cell and is treated as unknown.
+    Pure: no I/O, no fabrication. Two guards protect the tables:
+    - Only authoritative, non-dry runs are aggregated (see :func:`_is_authoritative`).
+    - Runs are de-duplicated by ``(exp, arm, seed)``, keeping the latest by
+      ``finished_at``: a re-run of one seed must weight it ONCE, not inflate the
+      ``n`` inside ``mean ± sigma``.
+    A run whose ``(exp, arm)`` matches no known cell is treated as unknown.
     """
+    # De-dup by (exp, arm, seed): later finished_at wins. None sorts first so a
+    # timestamped rerun supersedes an untimed earlier row.
+    latest: dict[tuple[str, str, int], Run] = {}
+    for run in runs:
+        if not _is_authoritative(run.metrics):
+            continue
+        key = (run.exp or "", run.arm, run.seed)
+        prev = latest.get(key)
+        if prev is None or _finished_key(run) >= _finished_key(prev):
+            latest[key] = run
+
     by_cell: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
     unknown: list[Run] = []
-    for run in runs:
+    for run in latest.values():
         key = (run.exp or "", run.arm)
         if key in KNOWN_CELLS:
             by_cell[key].append(run.metrics)
         else:
             unknown.append(run)
     return Agg(by_cell=dict(by_cell), unknown=tuple(unknown))
+
+
+def _finished_key(run: Run) -> tuple[int, str]:
+    """Sortable finished_at: (has_timestamp, iso-string). Untimed rows sort first."""
+    ts = run.finished_at
+    return (1, ts.isoformat()) if ts is not None else (0, "")
 
 
 # -----------------------------------------------------------------------------
@@ -452,6 +488,8 @@ def _resolve_cell(agg: Agg, spec: tuple[str, ...]) -> str:
     dicts = agg.by_cell.get((exp, arm), ())
     if kind == "num":
         return fmt_cell(_numeric_values(dicts, key))
+    if kind == "pct":
+        return fmt_cell([v * 100.0 for v in _numeric_values(dicts, key)])
     if kind == "bool":
         return fmt_bool(_bool_values(dicts, key))
     if kind == "bool_inv":

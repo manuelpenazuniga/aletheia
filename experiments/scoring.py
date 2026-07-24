@@ -278,22 +278,29 @@ def ku_accuracy(
     ground_truth: Mapping[str, str],
     match: Matcher | None = None,
 ) -> float:
-    """Fraction of answers that match the *current* (post-update) fact.
+    """Fraction of the ground-truth questions answered with the *current* fact.
 
-    A missing ground-truth entry for an answered ``fact_key`` raises
-    ``ValueError`` rather than silently skipping it (integrity: never score a
-    subset). Empty ``answers`` raises ``ValueError``.
+    The denominator is the number of ground-truth questions, NOT the number of
+    answers: a question left unanswered counts as wrong. Dividing by answers would
+    let an arm inflate its score by declining to answer the hard (revised) cases —
+    exactly the knowledge-update failure E3 is meant to catch. A missing
+    ground-truth entry for an answered ``fact_key`` raises ``ValueError`` (never
+    score a key we cannot grade). Empty ``ground_truth`` raises ``ValueError``.
     """
-    if not answers:
-        raise ValueError("ku_accuracy requires at least one answer")
+    if not ground_truth:
+        raise ValueError("ku_accuracy requires a non-empty ground truth")
     matcher = _resolve(match)
-    correct = 0
+    latest: dict[str, str] = {}
     for a in answers:
         if a.fact_key not in ground_truth:
             raise ValueError(f"no ground truth for fact_key {a.fact_key!r}")
-        if matcher(a.text, ground_truth[a.fact_key]):
-            correct += 1
-    return correct / len(answers)
+        latest[a.fact_key] = a.text
+    correct = sum(
+        1
+        for key, expected in ground_truth.items()
+        if key in latest and matcher(latest[key], expected)
+    )
+    return correct / len(ground_truth)
 
 
 def stale_fact_rate(
@@ -422,6 +429,11 @@ def footprint_mb(stats: MemoryStats | Sequence[MemoryStats]) -> float:
     """
     if isinstance(stats, MemoryStats):
         return stats.footprint_mb
+    stats = list(stats)
+    if not stats:
+        # An absent E5 dataset must be pendiente, never a fabricated zero footprint
+        # (every other empty metric here raises; this one must too).
+        raise ValueError("footprint_mb requires at least one MemoryStats")
     total = sum(s.total_cost_tokens for s in stats)
     return round(total * 4 / 1_048_576, 4)
 

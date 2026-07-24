@@ -191,9 +191,22 @@ def test_ku_accuracy_missing_ground_truth_raises():
         ku_accuracy([Answer("f9", "x")], {"f1": "y"})
 
 
-def test_ku_accuracy_empty_raises():
+def test_ku_accuracy_empty_ground_truth_raises():
     with pytest.raises(ValueError):
-        ku_accuracy([], {"f1": "y"})
+        ku_accuracy([], {})
+
+
+def test_ku_accuracy_unanswered_questions_count_as_wrong():
+    """No answers over one question is 0.0 — declining to answer never inflates."""
+    assert ku_accuracy([], {"f1": "current"}) == 0.0
+
+
+def test_ku_accuracy_denominator_is_ground_truth_not_answers():
+    from experiments.scoring import Answer
+
+    # Two questions; only the easy one answered correctly -> 1/2, not 1/1.
+    answers = [Answer(fact_key="f1", text="current")]
+    assert ku_accuracy(answers, {"f1": "current", "f2": "revised"}) == pytest.approx(0.5)
 
 
 def test_stale_fact_rate():
@@ -298,6 +311,12 @@ def test_footprint_mb_single_stats():
 
 def test_footprint_mb_sequence_sums():
     assert footprint_mb([_stats(131072), _stats(131072)]) == 1.0
+
+
+def test_footprint_mb_empty_raises():
+    """An absent E5 dataset must be pendiente, never a fabricated zero footprint."""
+    with pytest.raises(ValueError):
+        footprint_mb([])
 
 
 def test_footprint_mb_matches_model_formula():

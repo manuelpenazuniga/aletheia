@@ -177,6 +177,16 @@ class CockroachRecorder:
         self._dsn = dsn
 
     def record(self, run: RunRecord) -> None:  # pragma: no cover - requires a cluster
+        # The run-of-record ledger takes ONLY authoritative rows. A dry/smoke or a
+        # not-yet-implemented (pending) run must fail loudly here rather than
+        # persist a row that could later be mistaken for a result. The offline
+        # InMemoryRecorder still captures such rows for inspection.
+        if run.metrics.get("authoritative") is not True:
+            raise RunnerError(
+                f"refusing to persist a non-authoritative run to experiment_runs "
+                f"(arm={run.arm!r} seed={run.seed} dry_run={run.metrics.get('dry_run')}); "
+                "only a real run of record may be written"
+            )
         import psycopg
         from psycopg.types.json import Jsonb
 
@@ -581,6 +591,13 @@ def run_once(
     started = utcnow()
     metrics = runner(arm, seed, config, deps, dry_run)
     finished = utcnow()
+
+    # Couple the flags at the single choke point: a dry run can NEVER be
+    # authoritative, whatever the deps claim. This is what make_tables and the
+    # CockroachRecorder both trust, so it must hold by construction, not by a
+    # caller remembering to set two booleans consistently.
+    metrics["dry_run"] = dry_run
+    metrics["authoritative"] = bool(deps.authoritative) and not dry_run
 
     record = RunRecord(
         run_id=str(uuid.uuid4()),

@@ -28,9 +28,36 @@ from experiments.make_tables import (
 )
 
 
-def _run(exp: str, arm: str, seed: int, metrics: Mapping[str, Any]) -> Run:
-    full = {"experiment": exp, "arm": arm, "seed": seed, **metrics}
-    return Run(exp=exp, arm=arm, seed=seed, n_agents=metrics.get("n_agents"), metrics=full)
+def _run(
+    exp: str,
+    arm: str,
+    seed: int,
+    metrics: Mapping[str, Any],
+    *,
+    authoritative: bool = True,
+    dry_run: bool = False,
+    finished_at: Any = None,
+) -> Run:
+    # authoritative=True by default: these represent runs of record. A row that is
+    # not authoritative (or is a dry run) must be EXCLUDED from the tables — the
+    # flags are set explicitly here rather than omitted, so a test can never
+    # accidentally bless a non-authoritative row into a result cell.
+    full = {
+        "experiment": exp,
+        "arm": arm,
+        "seed": seed,
+        "authoritative": authoritative,
+        "dry_run": dry_run,
+        **metrics,
+    }
+    return Run(
+        exp=exp,
+        arm=arm,
+        seed=seed,
+        n_agents=metrics.get("n_agents"),
+        metrics=full,
+        finished_at=finished_at,
+    )
 
 
 def _row_cells(table_md: str, label: str) -> list[str]:
@@ -156,7 +183,33 @@ def test_missing_metric_key_yields_pendiente_cell():
     table = render_r3(aggregate(runs))
     row = _row_cells(table, "A0 full")
     assert row[1] == "pendiente"  # KU accuracy: missing key -> pendiente
-    assert row[2] == "0.1 (n=1)"  # stale fact rate: present
+    assert row[2] == "10 (n=1)"  # % stale fact: 0.1 fraction rendered as a percent
+
+
+def test_non_authoritative_and_dry_rows_never_render():
+    """A dry-run or non-authoritative row with real-looking numbers must NOT enter
+    the tables (external review: make_tables must not trust an arbitrary row)."""
+    runs = [
+        _run("E3", "A0_full", 0, {"ku_accuracy": 0.99}, authoritative=False),
+        _run("E3", "A0_full", 1, {"ku_accuracy": 0.99}, dry_run=True),
+    ]
+    row = _row_cells(render_r3(aggregate(runs)), "A0 full")
+    assert row[1] == "pendiente"  # neither fake row reached the cell
+
+
+def test_duplicate_seed_is_counted_once():
+    """Re-running one seed must weight it ONCE (latest wins), not inflate n."""
+    from datetime import UTC, datetime
+
+    early = datetime(2026, 8, 1, tzinfo=UTC)
+    late = datetime(2026, 8, 2, tzinfo=UTC)
+    runs = [
+        _run("E3", "A0_full", 0, {"ku_accuracy": 0.5}, finished_at=early),
+        _run("E3", "A0_full", 0, {"ku_accuracy": 0.9}, finished_at=late),  # rerun of seed 0
+    ]
+    row = _row_cells(render_r3(aggregate(runs)), "A0 full")
+    # One seed, latest value -> "0.9 (n=1)", never a two-sample mean of 0.5 and 0.9.
+    assert row[1] == "0.9 (n=1)"
 
 
 def test_shared_arm_disambiguated_by_experiment():
@@ -167,8 +220,8 @@ def test_shared_arm_disambiguated_by_experiment():
         _run("E5", "A0_full", 0, {"tokens_per_query": 1200.0}),
     ]
     row = _row_cells(render_r3(aggregate(runs)), "A0 full")
-    assert row[1] == "0.9 (n=1)"  # KU accuracy (E3)
-    assert row[3] == "0.8 (n=1)"  # Poison det. % (E4)
+    assert row[1] == "0.9 (n=1)"  # KU accuracy (E3): a fraction, not a % column
+    assert row[3] == "80 (n=1)"  # Poison det. %: 0.8 fraction rendered as a percent
     assert row[5] == "1.2e+03 (n=1)"  # Tokens/query (E5)
 
 
