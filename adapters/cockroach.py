@@ -22,9 +22,9 @@ Design notes
   cast (the smoke.py pattern) and read back via ``embedding::STRING``. Retrieval
   ranks with the cosine operator ``<=>`` so distances agree with the oracle's
   :func:`~adapters.memory_inmem.cosine_distance` by contract, not by coincidence.
-* **Divergence from the oracle:** the ``memories`` table has no ``meta`` column,
-  so :class:`~core.models.MemoryEvent.meta` does not round-trip — it comes back
-  ``{}``. Documented and accepted; a future migration can add a JSONB column.
+* **meta round-trips** through the ``memories.meta`` JSONB column, so the
+  consolidation cycle can key on ``meta['fact_key']`` against this backend exactly
+  as it does against the in-memory oracle.
 
 This module lives under ``adapters/`` and may import psycopg; ``core/`` may not
 (enforced by tests/test_architecture.py).
@@ -63,11 +63,11 @@ from core.models import (
 
 # Column projection shared by every full-MemoryEvent read: memories LEFT JOIN
 # provenance so parent_mem / signature / hop_count come back on the same row.
-# `meta` has no column (documented divergence) and is filled with {} on rebuild.
+# `meta` (JSONB) round-trips — the consolidation cycle keys on meta['fact_key'].
 _MEM_COLS = (
     "m.mem_id, m.agent_id, m.kind, m.content, m.embedding::STRING, "
     "m.importance, m.cost_tokens, m.status, m.superseded_by, m.created_at, "
-    "m.last_accessed, m.access_count, p.parent_mem, p.signature, p.hop_count"
+    "m.last_accessed, m.access_count, m.meta, p.parent_mem, p.signature, p.hop_count"
 )
 _MEM_FROM = "FROM memories m LEFT JOIN provenance p ON p.mem_id = m.mem_id"
 
@@ -205,6 +205,7 @@ class CockroachDBAdapter:
             created_at,
             last_accessed,
             access_count,
+            meta,
             parent_mem,
             signature,
             hop_count,
@@ -225,7 +226,7 @@ class CockroachDBAdapter:
             parent_mem=str(parent_mem) if parent_mem is not None else None,
             signature=signature,
             hop_count=hop_count if hop_count is not None else 0,
-            meta={},
+            meta=dict(meta) if meta else {},
         )
 
     def _check_dim(self, vec: Any) -> None:
@@ -281,8 +282,8 @@ class CockroachDBAdapter:
                     """
                     INSERT INTO memories
                         (mem_id, agent_id, kind, content, embedding, importance,
-                         cost_tokens, status)
-                    VALUES (%s::UUID, %s, %s, %s, %s::VECTOR, %s, %s, %s)
+                         cost_tokens, status, meta)
+                    VALUES (%s::UUID, %s, %s, %s, %s::VECTOR, %s, %s, %s, %s)
                     RETURNING mem_id
                     """,
                     (
@@ -294,6 +295,7 @@ class CockroachDBAdapter:
                         event.importance,
                         event.cost_tokens,
                         str(event.status),
+                        Jsonb(dict(event.meta)),
                     ),
                 ).fetchone()
             else:
@@ -301,8 +303,8 @@ class CockroachDBAdapter:
                     """
                     INSERT INTO memories
                         (agent_id, kind, content, embedding, importance,
-                         cost_tokens, status)
-                    VALUES (%s, %s, %s, %s::VECTOR, %s, %s, %s)
+                         cost_tokens, status, meta)
+                    VALUES (%s, %s, %s, %s::VECTOR, %s, %s, %s, %s)
                     RETURNING mem_id
                     """,
                     (
@@ -313,6 +315,7 @@ class CockroachDBAdapter:
                         event.importance,
                         event.cost_tokens,
                         str(event.status),
+                        Jsonb(dict(event.meta)),
                     ),
                 ).fetchone()
             mem_id = str(row[0])
@@ -339,11 +342,18 @@ class CockroachDBAdapter:
 
         def fn(conn: psycopg.Connection) -> None:
             self._require_memory(conn, mem_id)
-            conn.execute(
-                "UPDATE memories SET embedding = %s::VECTOR WHERE mem_id = %s::UUID",
-                (literal, mem_id),
-            )
-            # meta has no column in `memories`: documented, accepted divergence.
+            if meta:
+                # Merge into the existing JSONB, matching the oracle's meta.update.
+                conn.execute(
+                    "UPDATE memories SET embedding = %s::VECTOR, meta = meta || %s "
+                    "WHERE mem_id = %s::UUID",
+                    (literal, Jsonb(dict(meta)), mem_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE memories SET embedding = %s::VECTOR WHERE mem_id = %s::UUID",
+                    (literal, mem_id),
+                )
 
         self._txn(fn)
 
@@ -384,7 +394,7 @@ class CockroachDBAdapter:
             rows = conn.execute(
                 """
                 SELECT m.mem_id, m.agent_id, m.content, m.kind, m.cost_tokens,
-                       m.importance, m.status, m.created_at, p.hop_count,
+                       m.importance, m.status, m.created_at, m.meta, p.hop_count,
                        m.embedding <=> %s::VECTOR AS distance
                 FROM memories m LEFT JOIN provenance p ON p.mem_id = m.mem_id
                 WHERE m.status = 'active'
@@ -405,6 +415,7 @@ class CockroachDBAdapter:
                 importance,
                 status,
                 created_at,
+                meta,
                 hop_count,
                 distance,
             ) in rows:
@@ -425,7 +436,7 @@ class CockroachDBAdapter:
                         status=MemoryStatus(status),
                         created_at=created_at,
                         hop_count=hop_count if hop_count is not None else 0,
-                        meta={},
+                        meta=dict(meta) if meta else {},
                     )
                 )
 

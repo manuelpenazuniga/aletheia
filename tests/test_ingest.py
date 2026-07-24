@@ -230,6 +230,18 @@ def test_tampered_content_signature_mismatch(client, adapter):
     assert adapter.stats().total_memories == 0
 
 
+def test_non_ascii_signature_is_401_not_500(make_client, adapter):
+    """A non-ASCII signature in the JSON body must be a clean 401, not a
+    TypeError from hmac.compare_digest surfacing as a 500. (HTTP headers are
+    latin-1, so the bearer can't carry non-ASCII; the signature travels in the
+    body and can.)"""
+    client = make_client(raise_server_exceptions=False)
+    token, body = signed_body("sre-1", "content", signature="ñòn-ascii-sig-字")
+    resp = client.post("/v1/memories", json=body, headers=auth_headers(token))
+    assert resp.status_code == 401
+    assert adapter.stats().total_memories == 0
+
+
 def test_tampered_parent_or_hop_signature_mismatch(client):
     token, body = signed_body("sre-1", "content", hop_count=0)
     body["provenance"]["hop_count"] = 2  # altered after signing

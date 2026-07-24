@@ -173,6 +173,58 @@ def test_list_memories_match_oracle(live, sleep):
 
 
 # --------------------------------------------------------------------------- #
+# meta must round-trip, or the consolidation cycle silently no-ops here.
+# --------------------------------------------------------------------------- #
+def test_meta_round_trips_through_jsonb(live):
+    mem_id = live.adapter.write_episode(
+        live.agent_id,
+        contract._event(
+            live.embedder, live.agent_id, "restart the pod", meta={"fact_key": "runbook:db:fix"}
+        ),
+    )
+    assert live.adapter.get_memory(mem_id).meta == {"fact_key": "runbook:db:fix"}
+    listed = live.adapter.list_memories(agent_id=live.agent_id)
+    assert listed and listed[0].meta == {"fact_key": "runbook:db:fix"}
+    hit = live.adapter.query_semantic(
+        live.agent_id, live.embedder.embed("restart the pod"), 5, 4000
+    )
+    assert hit and hit[0].meta == {"fact_key": "runbook:db:fix"}
+
+
+def test_consolidation_runs_against_the_live_backend(live, sleep):
+    """The thesis feature end to end on CockroachDB: a revised runbook is
+    superseded and promoted to a canonical fact — the exact path that no-ops if
+    meta does not persist."""
+    from core.config import AletheiaConfig
+    from core.consolidation import consolidate
+    from core.models import MemoryStatus
+
+    key = "runbook:db-latency:fix"
+    old = live.adapter.write_episode(
+        live.agent_id,
+        contract._event(live.embedder, live.agent_id, "restart the pod", meta={"fact_key": key}),
+    )
+    sleep()
+    new = live.adapter.write_episode(
+        live.agent_id,
+        contract._event(
+            live.embedder, live.agent_id, "drain then restart the pod", meta={"fact_key": key}
+        ),
+    )
+
+    summary = consolidate(live.adapter, AletheiaConfig(embedding_dim=DIM))
+
+    assert summary.groups == 1
+    assert summary.supersedes == 1
+    assert summary.canonical_updates == 1
+    assert live.adapter.get_memory(old).status is MemoryStatus.SUPERSEDED
+    assert live.adapter.get_memory(new).status is MemoryStatus.ACTIVE
+    fact = live.adapter.get_canonical(key)
+    assert fact is not None and fact.content == "drain then restart the pod"
+    assert fact.source_mem == new
+
+
+# --------------------------------------------------------------------------- #
 # Concurrency: the 40001 retry path must survive real contention.
 # --------------------------------------------------------------------------- #
 def test_concurrent_writes_do_not_lose_or_duplicate(live):

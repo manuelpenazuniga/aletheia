@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at   TIMESTAMPTZ DEFAULT now(),
     last_accessed TIMESTAMPTZ DEFAULT now(),
     access_count INT NOT NULL DEFAULT 0,
+    -- Routing/consolidation metadata (e.g. meta->>'fact_key' groups revisions of
+    -- one runbook). The consolidation cycle (C2) keys on it, so it MUST persist
+    -- and round-trip; without this column knowledge-update silently no-ops
+    -- against CockroachDB while passing against the in-memory oracle.
+    meta         JSONB NOT NULL DEFAULT '{}'::JSONB,
     -- The model-level invariants, enforced at the storage boundary so the
     -- database is as strict as core/models.py (the InMemoryAdapter oracle):
     CONSTRAINT chk_mem_kind        CHECK (kind IN ('episodic', 'semantic', 'canonical_ref')),

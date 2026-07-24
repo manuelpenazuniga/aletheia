@@ -84,7 +84,10 @@ def verify(secret: str, req: RememberRequest, bearer: str) -> AuthContext:
     expected_token = derive_agent_token(secret, req.agent_id)
     # Proves the caller holds THIS agent's token. Because the token is derived
     # from the body's agent_id, a token for one agent cannot sign for another.
-    if not hmac.compare_digest(bearer, expected_token):
+    # Compare as UTF-8 bytes: compare_digest raises TypeError on a non-ASCII str,
+    # and both operands here are attacker-influenced — a non-ASCII bearer must be
+    # a plain 401 mismatch, never a 500.
+    if not hmac.compare_digest(bearer.encode("utf-8"), expected_token.encode("utf-8")):
         raise Unauthorized("bearer token does not match the agent")
 
     expected_sig = sign(
@@ -95,7 +98,9 @@ def verify(secret: str, req: RememberRequest, bearer: str) -> AuthContext:
         req.provenance.hop_count,
     )
     # Body integrity: content / parent / hop cannot be altered after signing.
-    if not hmac.compare_digest(req.provenance.signature, expected_sig):
+    if not hmac.compare_digest(
+        req.provenance.signature.encode("utf-8"), expected_sig.encode("utf-8")
+    ):
         raise Unauthorized("provenance signature does not match the body")
 
     return AuthContext(agent_id=req.agent_id, agent_token=expected_token)
