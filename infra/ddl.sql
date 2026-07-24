@@ -32,10 +32,17 @@ CREATE TABLE IF NOT EXISTS memories (
     importance   FLOAT NOT NULL DEFAULT 0.5,   -- drives metabolic forgetting
     cost_tokens  INT NOT NULL,                 -- estimated retention cost
     status       STRING NOT NULL DEFAULT 'active',  -- 'active'|'superseded'|'quarantined'|'archived'
-    superseded_by UUID,                        -- knowledge-update chain
+    superseded_by UUID REFERENCES memories(mem_id),  -- knowledge-update chain
     created_at   TIMESTAMPTZ DEFAULT now(),
     last_accessed TIMESTAMPTZ DEFAULT now(),
-    access_count INT NOT NULL DEFAULT 0
+    access_count INT NOT NULL DEFAULT 0,
+    -- The model-level invariants, enforced at the storage boundary so the
+    -- database is as strict as core/models.py (the InMemoryAdapter oracle):
+    CONSTRAINT chk_mem_kind        CHECK (kind IN ('episodic', 'semantic', 'canonical_ref')),
+    CONSTRAINT chk_mem_status      CHECK (status IN ('active', 'superseded', 'quarantined', 'archived')),
+    CONSTRAINT chk_mem_importance  CHECK (importance BETWEEN 0.0 AND 1.0),
+    CONSTRAINT chk_mem_cost        CHECK (cost_tokens > 0),  -- a negative cost is budget credit
+    CONSTRAINT chk_mem_access      CHECK (access_count >= 0)
 );
 
 -- Distributed vector index (C-SPANN). Freshness is immediate after
@@ -71,21 +78,26 @@ CREATE TABLE IF NOT EXISTS canonical_facts (
 
 CREATE TABLE IF NOT EXISTS provenance (
     link_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    mem_id       UUID NOT NULL REFERENCES memories(mem_id),
-    parent_mem   UUID,                         -- NULL = direct observation
-    agent_id     STRING NOT NULL,
+    mem_id       UUID NOT NULL UNIQUE REFERENCES memories(mem_id),  -- exactly one link per memory
+    parent_mem   UUID REFERENCES memories(mem_id),  -- NULL = direct observation
+    agent_id     STRING NOT NULL REFERENCES agents(agent_id),
     signature    STRING NOT NULL,              -- HMAC(agent token, content)
     hop_count    INT NOT NULL DEFAULT 0,       -- gossip hops (degradation distance)
-    created_at   TIMESTAMPTZ DEFAULT now()
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    CONSTRAINT chk_prov_hop CHECK (hop_count >= 0)
 );
+-- Provenance walks follow parent_mem; index it so the chain is not a table scan.
+-- (mem_id is already indexed by its UNIQUE constraint.)
+CREATE INDEX IF NOT EXISTS idx_prov_parent ON provenance (parent_mem);
 
 CREATE TABLE IF NOT EXISTS quarantine_log (
     q_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    mem_id       UUID,
+    mem_id       UUID REFERENCES memories(mem_id),
     reason       STRING NOT NULL,              -- 'bad_provenance'|'semantic_anomaly'|'injection_pattern'
     detector     STRING NOT NULL,
     payload      JSONB,
-    created_at   TIMESTAMPTZ DEFAULT now()
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    CONSTRAINT chk_quar_reason CHECK (reason IN ('bad_provenance', 'semantic_anomaly', 'injection_pattern'))
 );
 
 -- Experimental results live in the database, not in loose CSV files.

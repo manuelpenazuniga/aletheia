@@ -34,4 +34,8 @@ else
   PYTHON=python3
 fi
 
-exec "$PYTHON" infra/apply_ddl.py --dsn "$DSN"
+# Pass the DSN through the environment, not argv: a DSN on the command line is
+# visible to any user via `ps`, exposing the password. apply_ddl.py reads
+# ALETHEIA_CRDB_DSN when --dsn is omitted.
+export ALETHEIA_CRDB_DSN="$DSN"
+exec "$PYTHON" infra/apply_ddl.py

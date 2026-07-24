@@ -25,12 +25,29 @@ LIVE=$("${SQL[@]}" --format=csv -e \
 
 echo
 echo "--- replication ---"
-"${SQL[@]}" -e "SHOW ZONE CONFIGURATION FOR RANGE default;" | grep -i num_replicas || true
+# The chaos claim ("lose a node, keep quorum") only holds at replication factor
+# >= 3, so assert it rather than merely printing it.
+REPLICAS=$("${SQL[@]}" --format=csv -e \
+  "SELECT (crdb_internal.get_zone_config(0)->'num_replicas')::INT8;" 2>/dev/null | tail -1 | tr -d '[:space:]' || true)
+if [ -z "${REPLICAS:-}" ] || [ "$REPLICAS" = "NULL" ]; then
+  # Fallback for versions where the internal builtin path differs.
+  REPLICAS=$("${SQL[@]}" -e "SHOW ZONE CONFIGURATION FOR RANGE default;" \
+    | sed -n 's/.*num_replicas = \([0-9]\{1,\}\).*/\1/p' | tail -1)
+fi
+echo "[verify] num_replicas = ${REPLICAS:-unknown}"
 
 echo
-if [ "$LIVE" = "3" ]; then
-  echo "[verify] OK — 3 live nodes. Losing one leaves quorum (2 of 3)."
-else
+FAIL=0
+if [ "$LIVE" != "3" ]; then
   echo "[verify] FAIL — expected 3 live nodes, found: ${LIVE:-unknown}" >&2
+  FAIL=1
+fi
+if [ -z "${REPLICAS:-}" ] || [ "$REPLICAS" -lt 3 ] 2>/dev/null; then
+  echo "[verify] FAIL — replication factor ${REPLICAS:-unknown} < 3; losing a node would lose data" >&2
+  FAIL=1
+fi
+if [ "$FAIL" = "0" ]; then
+  echo "[verify] OK — 3 live nodes at RF ${REPLICAS}. Losing one leaves quorum (2 of 3)."
+else
   exit 1
 fi

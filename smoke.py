@@ -52,7 +52,10 @@ class SmokeFailure(RuntimeError):
 
 
 def redact(dsn: str) -> str:
-    return re.sub(r"//([^:/@]+):[^@]*@", r"//\1:***@", dsn)
+    """Hide the password in both the URI userinfo and query-string forms."""
+    dsn = re.sub(r"//([^:/@]+):[^@]*@", r"//\1:***@", dsn)
+    dsn = re.sub(r"(?i)(password|pw)=[^&\s]*", r"\1=***", dsn)
+    return dsn
 
 
 def step(message: str) -> None:
@@ -120,178 +123,198 @@ def run(args: argparse.Namespace) -> int:
                 "concurrency argument of this project depends on it"
             )
 
-        # 3. Register the smoke agent (the memories -> agents foreign key).
-        conn.execute(
-            """
-            UPSERT INTO agents (agent_id, role, token_hash) VALUES (%s, %s, %s)
-            """,
-            (SMOKE_AGENT_ID, "sre", "smoke-not-a-real-token-hash"),
-        )
-        step(f"agent    : {SMOKE_AGENT_ID} registered")
-
-        # 4. Write memory + provenance in ONE serializable transaction. This is
-        #    the property that removes the vector/row consistency gap.
-        written: list[str] = []
-        with conn.transaction():
-            for content, vec in zip([SMOKE_CONTENT, DECOY_CONTENT], vectors, strict=True):
-                event = MemoryEvent(
-                    agent_id=SMOKE_AGENT_ID,
-                    content=content,
-                    kind=MemoryKind.EPISODIC,
-                    embedding=vec,
-                    importance=0.8,
-                )
-                mem_id = conn.execute(
-                    """
-                    INSERT INTO memories
-                        (agent_id, kind, content, embedding, importance, cost_tokens)
-                    VALUES (%s, %s, %s, %s::VECTOR, %s, %s)
-                    RETURNING mem_id
-                    """,
-                    (
-                        event.agent_id,
-                        str(event.kind),
-                        event.content,
-                        to_vector_literal(list(event.embedding)),
-                        event.importance,
-                        event.cost_tokens,
-                    ),
-                ).fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT INTO provenance (mem_id, parent_mem, agent_id, signature, hop_count)
-                    VALUES (%s, NULL, %s, %s, 0)
-                    """,
-                    (mem_id, SMOKE_AGENT_ID, f"smoke-hmac-{uuid.uuid4().hex[:12]}"),
-                )
-                written.append(str(mem_id))
-        step(f"wrote    : {len(written)} memories + provenance in one transaction")
-
-        target_id = written[0]
-
-        # 5. Read it back and verify the round-trip, vector included.
-        row = conn.execute(
-            """
-            SELECT content, cost_tokens, status, vector_dims(embedding)
-            FROM memories WHERE mem_id = %s
-            """,
-            (target_id,),
-        ).fetchone()
-        if row is None:
-            raise SmokeFailure(f"memory {target_id} was not readable after commit")
-        content, cost_tokens, status, dims = row
-        if content != SMOKE_CONTENT:
-            raise SmokeFailure("content did not round-trip intact")
-        if dims != cfg.embedding_dim:
-            raise SmokeFailure(f"stored vector has {dims} dims, expected {cfg.embedding_dim}")
-        if cost_tokens != estimate_tokens(SMOKE_CONTENT):
-            raise SmokeFailure("cost_tokens did not round-trip")
-        step(
-            f"read back: content ok, status={status}, vector_dims={dims}, cost_tokens={cost_tokens}"
-        )
-
-        # 6. Semantic retrieval exactly as the fleet performs it — filtered to
-        #    active memories — plus proof that the C-SPANN index served it.
-        #    idx_mem_embedding carries `status` as a prefix column precisely so
-        #    this filtered query uses the index; without the prefix the same
-        #    query plans as a FULL SCAN. `<=>` is cosine, matching the index
-        #    opclass and InMemoryAdapter's scoring.
-        query_vec = embedder.embed("p99 read latency is spiking on the primary database shard")
-        search_sql = """
-            SELECT mem_id, content, embedding <=> %s::VECTOR AS distance
-            FROM memories
-            WHERE status = 'active'
-            ORDER BY distance
-            LIMIT 10
-        """
-        plan = "\n".join(
-            str(r[0])
-            for r in conn.execute("EXPLAIN " + search_sql, (to_vector_literal(query_vec),))
-        )
-        used_index = "vector search" in plan and "idx_mem_embedding" in plan
-        pruned = "prefix spans" in plan
-        step(
-            f"plan     : vector index {'USED' if used_index else 'NOT used (full scan)'}"
-            + (", pruned to the active partition" if pruned else "")
-        )
-        if not used_index:
-            raise SmokeFailure(
-                "the query planner did not use idx_mem_embedding — the vector index "
-                f"is not serving retrieval:\n{plan}"
+        # A unique agent id per run: the fixtures are scoped to it, so concurrent
+        # runs never touch each other's rows and cleanup can never delete another
+        # run's (or a real) agent. Codex review #5/#15.
+        agent_id = f"{SMOKE_AGENT_ID}-{uuid.uuid4().hex[:12]}"
+        summary: dict[str, Any] | None = None
+        try:
+            # 3. Register the smoke agent (the memories -> agents foreign key).
+            conn.execute(
+                "UPSERT INTO agents (agent_id, role, token_hash) VALUES (%s, %s, %s)",
+                (agent_id, "sre", "smoke-not-a-real-token-hash"),
             )
-        if not pruned:
-            raise SmokeFailure(
-                "the vector index was used but not pruned by status — the prefix "
-                f"column is not doing its job:\n{plan}"
-            )
+            step(f"agent    : {agent_id} registered")
 
-        hits = conn.execute(search_sql, (to_vector_literal(query_vec),)).fetchall()
-        if not hits:
-            raise SmokeFailure("vector search returned nothing")
-        ranked = [str(h[0]) for h in hits]
-        step(f"searched : {len(hits)} hits, nearest distance={hits[0][2]:.4f}")
-        if target_id not in ranked:
-            raise SmokeFailure(
-                f"the written memory {target_id} was not retrievable by vector search"
-            )
-        if ranked.index(target_id) > ranked.index(written[1]):
-            raise SmokeFailure(
-                "vector search ranked the certificate decoy above the latency runbook"
-            )
-        step("ranking  : the latency runbook outranked the certificate decoy")
-
-        # 7. Provenance is queryable — the audit path the immune system relies on.
-        links = conn.execute(
-            "SELECT agent_id, hop_count, parent_mem FROM provenance WHERE mem_id = %s",
-            (target_id,),
-        ).fetchall()
-        if len(links) != 1 or links[0][1] != 0 or links[0][2] is not None:
-            raise SmokeFailure(f"unexpected provenance for {target_id}: {links}")
-        step("provenance: 1 root link, hop_count=0, direct observation")
-
-        # 8. Status transition, not deletion.
-        conn.execute(
-            "UPDATE memories SET status = 'superseded', superseded_by = %s WHERE mem_id = %s",
-            (written[1], target_id),
-        )
-        remaining = conn.execute(
-            "SELECT count(*) FROM memories WHERE mem_id = %s AND status = 'superseded'",
-            (target_id,),
-        ).fetchone()[0]
-        if remaining != 1:
-            raise SmokeFailure("supersede did not preserve the row")
-        step("supersede: row preserved with status='superseded'")
-
-        # 8b. The knowledge-update property, end to end: the superseded runbook
-        #     must disappear from retrieval *immediately*, with no reindex step.
-        #     This is the whole reason `status` is a prefix column — the entry
-        #     leaves the searched partition the moment the status changes.
-        after = conn.execute(search_sql, (to_vector_literal(query_vec),)).fetchall()
-        if target_id in [str(r[0]) for r in after]:
-            raise SmokeFailure(
-                "the superseded memory is still retrievable — knowledge-update is "
-                "not reflected in the vector index"
-            )
-        step(f"freshness: superseded memory gone from search immediately ({len(after)} hits left)")
-
-        summary: dict[str, Any] = {
-            "server": version.split(" (")[0],
-            "isolation": isolation,
-            "embedder": embedder_label,
-            "embedding_dim": cfg.embedding_dim,
-            "memories_written": len(written),
-            "nearest_distance": round(float(hits[0][2]), 6),
-        }
-
-        # 9. Clean up the fixtures.
-        if args.keep:
-            step(f"kept     : rows left in place for inspection (agent {SMOKE_AGENT_ID})")
-        else:
+            # 4. Write memory + provenance in ONE serializable transaction. This
+            #    is the property that removes the vector/row consistency gap.
+            written: list[str] = []
             with conn.transaction():
-                conn.execute("DELETE FROM provenance WHERE agent_id = %s", (SMOKE_AGENT_ID,))
-                conn.execute("DELETE FROM memories WHERE agent_id = %s", (SMOKE_AGENT_ID,))
-                conn.execute("DELETE FROM agents WHERE agent_id = %s", (SMOKE_AGENT_ID,))
-            step("cleaned  : smoke fixtures removed")
+                for content, vec in zip([SMOKE_CONTENT, DECOY_CONTENT], vectors, strict=True):
+                    event = MemoryEvent(
+                        agent_id=agent_id,
+                        content=content,
+                        kind=MemoryKind.EPISODIC,
+                        embedding=vec,
+                        importance=0.8,
+                    )
+                    mem_id = conn.execute(
+                        """
+                        INSERT INTO memories
+                            (agent_id, kind, content, embedding, importance, cost_tokens)
+                        VALUES (%s, %s, %s, %s::VECTOR, %s, %s)
+                        RETURNING mem_id
+                        """,
+                        (
+                            event.agent_id,
+                            str(event.kind),
+                            event.content,
+                            to_vector_literal(list(event.embedding)),
+                            event.importance,
+                            event.cost_tokens,
+                        ),
+                    ).fetchone()[0]
+                    conn.execute(
+                        """
+                        INSERT INTO provenance (mem_id, parent_mem, agent_id, signature, hop_count)
+                        VALUES (%s, NULL, %s, %s, 0)
+                        """,
+                        (mem_id, agent_id, f"smoke-hmac-{uuid.uuid4().hex[:12]}"),
+                    )
+                    written.append(str(mem_id))
+            step(f"wrote    : {len(written)} memories + provenance in one transaction")
+
+            target_id, decoy_id = written[0], written[1]
+
+            # 5. Read it back and verify the round-trip, vector included.
+            row = conn.execute(
+                """
+                SELECT content, cost_tokens, status, vector_dims(embedding)
+                FROM memories WHERE mem_id = %s
+                """,
+                (target_id,),
+            ).fetchone()
+            if row is None:
+                raise SmokeFailure(f"memory {target_id} was not readable after commit")
+            content, cost_tokens, status, dims = row
+            if content != SMOKE_CONTENT:
+                raise SmokeFailure("content did not round-trip intact")
+            if dims != cfg.embedding_dim:
+                raise SmokeFailure(f"stored vector has {dims} dims, expected {cfg.embedding_dim}")
+            if cost_tokens != estimate_tokens(SMOKE_CONTENT):
+                raise SmokeFailure("cost_tokens did not round-trip")
+            step(
+                f"read back: content ok, status={status}, vector_dims={dims}, cost_tokens={cost_tokens}"
+            )
+
+            # 6. Prove the C-SPANN index serves the fleet's real query shape:
+            #    filtered to active memories, ordered by cosine distance ALONE.
+            #    The order must be distance-only: adding a secondary sort key
+            #    would force a full scan (the index provides distance order, not a
+            #    composite one). idx_mem_embedding carries `status` as a prefix
+            #    column so this filtered query uses the index. On real embeddings
+            #    exact-distance ties are measure-zero; the oracle's (distance,
+            #    mem_id) tie-break is only for deterministic unit tests.
+            query_vec = embedder.embed("p99 read latency is spiking on the primary database shard")
+            fleet_search = """
+                SELECT mem_id, embedding <=> %s::VECTOR AS distance
+                FROM memories
+                WHERE status = 'active'
+                ORDER BY distance
+                LIMIT 10
+            """
+            plan = "\n".join(
+                str(r[0])
+                for r in conn.execute("EXPLAIN " + fleet_search, (to_vector_literal(query_vec),))
+            )
+            used_index = "vector search" in plan and "idx_mem_embedding" in plan
+            pruned = "prefix spans" in plan
+            step(
+                f"plan     : vector index {'USED' if used_index else 'NOT used (full scan)'}"
+                + (", pruned to the active partition" if pruned else "")
+            )
+            if not used_index:
+                raise SmokeFailure(
+                    "the query planner did not use idx_mem_embedding — the vector "
+                    f"index is not serving retrieval:\n{plan}"
+                )
+            if not pruned:
+                raise SmokeFailure(
+                    "the vector index was used but not pruned by status — the prefix "
+                    f"column is not doing its job:\n{plan}"
+                )
+
+            # Ranking correctness, isolated from any other rows already in the DB:
+            # compare only this run's two memories. Robust regardless of contents.
+            ranking = conn.execute(
+                """
+                SELECT mem_id, embedding <=> %s::VECTOR AS distance
+                FROM memories
+                WHERE mem_id IN (%s, %s)
+                ORDER BY distance, mem_id
+                """,
+                (to_vector_literal(query_vec), target_id, decoy_id),
+            ).fetchall()
+            nearest = str(ranking[0][0])
+            step(f"searched : nearest of the two fixtures at distance={ranking[0][1]:.4f}")
+            if nearest != target_id:
+                raise SmokeFailure(
+                    "vector search ranked the certificate decoy above the latency runbook"
+                )
+            step("ranking  : the latency runbook outranked the certificate decoy")
+
+            # 7. Provenance is queryable — the audit path the immune system needs.
+            links = conn.execute(
+                "SELECT agent_id, hop_count, parent_mem FROM provenance WHERE mem_id = %s",
+                (target_id,),
+            ).fetchall()
+            if len(links) != 1 or links[0][1] != 0 or links[0][2] is not None:
+                raise SmokeFailure(f"unexpected provenance for {target_id}: {links}")
+            step("provenance: 1 root link, hop_count=0, direct observation")
+
+            # 8. Status transition, not deletion.
+            conn.execute(
+                "UPDATE memories SET status = 'superseded', superseded_by = %s WHERE mem_id = %s",
+                (decoy_id, target_id),
+            )
+            remaining = conn.execute(
+                "SELECT count(*) FROM memories WHERE mem_id = %s AND status = 'superseded'",
+                (target_id,),
+            ).fetchone()[0]
+            if remaining != 1:
+                raise SmokeFailure("supersede did not preserve the row")
+            step("supersede: row preserved with status='superseded'")
+
+            # 8b. Knowledge-update end to end: the superseded runbook must leave
+            #     retrieval *immediately*, no reindex. Scoped to this run's agent
+            #     so the check is unaffected by other memories in the cluster.
+            after = conn.execute(
+                """
+                SELECT mem_id FROM memories
+                WHERE status = 'active' AND agent_id = %s
+                ORDER BY embedding <=> %s::VECTOR, mem_id
+                """,
+                (agent_id, to_vector_literal(query_vec)),
+            ).fetchall()
+            if target_id in [str(r[0]) for r in after]:
+                raise SmokeFailure(
+                    "the superseded memory is still retrievable — knowledge-update "
+                    "is not reflected in the vector index"
+                )
+            step(
+                f"freshness: superseded memory gone from search immediately "
+                f"({len(after)} of this run's memories left)"
+            )
+
+            summary = {
+                "server": version.split(" (")[0],
+                "isolation": isolation,
+                "embedder": embedder_label,
+                "embedding_dim": cfg.embedding_dim,
+                "memories_written": len(written),
+                "nearest_distance": round(float(ranking[0][1]), 6),
+            }
+        finally:
+            # 9. Clean up this run's fixtures, always — even if an assertion above
+            #    failed partway. Scoped to this run's agent id only.
+            if args.keep:
+                step(f"kept     : rows left in place for inspection (agent {agent_id})")
+            else:
+                with conn.transaction():
+                    conn.execute("DELETE FROM provenance WHERE agent_id = %s", (agent_id,))
+                    conn.execute("DELETE FROM memories WHERE agent_id = %s", (agent_id,))
+                    conn.execute("DELETE FROM agents WHERE agent_id = %s", (agent_id,))
+                step("cleaned  : smoke fixtures removed")
 
     print(json.dumps(summary, indent=2))
     step("PASS — write and read of a real memory with a real embedding succeeded")

@@ -31,8 +31,15 @@ EXPECTED_TABLES = [
 
 
 def _redact(dsn: str) -> str:
-    """Never print a password. CLAUDE.md §3.4."""
-    return re.sub(r"//([^:/@]+):[^@]*@", r"//\1:***@", dsn)
+    """Never print a password. CLAUDE.md §3.4.
+
+    Covers both URI userinfo (``//user:pw@``) and the query-string /
+    keyword-conninfo forms (``password=...``, ``pw=...``), so a DSN that carries
+    its secret outside the userinfo does not leak into logs.
+    """
+    dsn = re.sub(r"//([^:/@]+):[^@]*@", r"//\1:***@", dsn)
+    dsn = re.sub(r"(?i)(password|pw)=[^&\s]*", r"\1=***", dsn)
+    return dsn
 
 
 def _split_statements(sql: str) -> list[str]:
@@ -58,11 +65,15 @@ def _target_database(dsn: str) -> str:
 def ensure_database(dsn: str) -> str:
     """Create the target database if missing, connecting via `defaultdb`."""
     import psycopg
+    from psycopg import sql
 
     dbname = _target_database(dsn)
     bootstrap_dsn = _swap_database(dsn, "defaultdb")
     with psycopg.connect(bootstrap_dsn, autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE IF NOT EXISTS "{dbname}"')
+        # Compose the identifier safely rather than interpolating it: a database
+        # name carrying a quote would otherwise be an injection point, even though
+        # the DSN is operator-controlled.
+        conn.execute(sql.SQL("CREATE DATABASE IF NOT EXISTS {}").format(sql.Identifier(dbname)))
     print(f"[apply_ddl] database ready: {dbname}")
     return dbname
 
@@ -78,8 +89,10 @@ def apply_ddl(dsn: str) -> None:
                 conn.execute(stmt)
             except psycopg.errors.FeatureNotSupported as exc:
                 # Vector indexing was behind a cluster setting before it went GA.
-                # Enable it explicitly rather than silently skipping the index.
-                if "vector" not in stmt.lower():
+                # Enable it explicitly rather than silently skipping the index —
+                # but ONLY for the CREATE VECTOR INDEX statement, so an unrelated
+                # FeatureNotSupported is not misdiagnosed or masked by a retry.
+                if not stmt.lstrip().lower().startswith("create vector index"):
                     raise
                 print(f"[apply_ddl] vector index rejected ({exc}); enabling feature flag")
                 conn.execute("SET CLUSTER SETTING feature.vector_index.enabled = true")
