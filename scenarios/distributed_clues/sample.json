@@ -1,0 +1,22 @@
+[
+  {
+    "id": "clue-0000",
+    "question": "What single root cause links the checkout 500s and the replica lag on 2026-07-20?",
+    "answer": "A forward-only schema migration shipped with the 14:02 deploy locked the orders table.",
+    "clues": [
+      {"agent_id": "sre-01", "content": "The checkout 500s began exactly at the 14:02 deploy."},
+      {"agent_id": "sre-02", "content": "Replica lag started climbing at 14:02 with no traffic change."},
+      {"agent_id": "sre-03", "content": "The 14:02 deploy included a forward-only migration on the orders table."}
+    ]
+  },
+  {
+    "id": "clue-0001",
+    "question": "Why did the gateway return 526 despite a freshly rotated leaf certificate?",
+    "answer": "The intermediate certificate was cross-signed by a retired CA, breaking the chain.",
+    "clues": [
+      {"agent_id": "sre-01", "content": "The leaf cert on the gateway was rotated an hour before the outage."},
+      {"agent_id": "ops-01", "content": "The intermediate cert was cross-signed by a CA retired last quarter."},
+      {"agent_id": "sre-02", "content": "Clients failed with an untrusted-chain error, not an expired-leaf error."}
+    ]
+  }
+]

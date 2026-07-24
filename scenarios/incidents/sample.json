@@ -1,0 +1,272 @@
+[
+  {
+    "category": "bad-deploy",
+    "fact_key": "runbook:bad-deploy:fix",
+    "id": "inc-0000",
+    "revisions": [
+      {
+        "content": "Use the progressive rollback (25% steps) now that the deploy tool supports it; an instant rollback overwhelmed the cold cache.",
+        "reason": "instant rollback caused a thundering-herd cache miss",
+        "supersedes": 1,
+        "version": 2
+      }
+    ],
+    "runbook": {
+      "authored_by": "sre-01",
+      "content": "Disable the offending feature flag, drain the crash-looping pods, and hold the pipeline until the fix merges.",
+      "version": 1
+    },
+    "symptoms": [
+      "feature flag defaulting to on in production",
+      "5xx rate jumped from 0.1% to 12% at 14:02"
+    ],
+    "title": "Post-deploy 500s on the payments path"
+  },
+  {
+    "category": "bad-deploy",
+    "fact_key": "runbook:bad-deploy:fix",
+    "id": "inc-0001",
+    "revisions": [
+      {
+        "content": "Use the progressive rollback (25% steps) now that the deploy tool supports it; an instant rollback overwhelmed the cold cache.",
+        "reason": "instant rollback caused a thundering-herd cache miss",
+        "supersedes": 1,
+        "version": 2
+      },
+      {
+        "content": "Rollback alone is not enough when a schema migration shipped with the deploy — check for applied migrations first and run the down migration before rolling back the code.",
+        "reason": "a forward-only migration made a naive rollback corrupt state",
+        "supersedes": 2,
+        "version": 3
+      }
+    ],
+    "runbook": {
+      "authored_by": "sre-03",
+      "content": "Roll back to the previous revision with the deploy tool, confirm the canary goes green, then open an incident for the missing env var.",
+      "version": 1
+    },
+    "symptoms": [
+      "canary health check red across two zones",
+      "new pods crash-looping on a missing env var"
+    ],
+    "title": "Error rate spike after the 14:02 deploy"
+  },
+  {
+    "category": "db-latency",
+    "fact_key": "runbook:db-latency:fix",
+    "id": "inc-0002",
+    "revisions": [
+      {
+        "content": "The warm replica is now read-only by default; promote it with cockroach node decommission only after checking replication factor.",
+        "reason": "replica topology changed after the multi-region migration",
+        "supersedes": 1,
+        "version": 2
+      },
+      {
+        "content": "Do NOT raise the pool size blindly — that masked a runaway analytics query last time. First identify the offending query in pg_stat_activity and cancel it, then fail reads to the replica.",
+        "reason": "raising the pool size hid the real cause and delayed recovery",
+        "supersedes": 2,
+        "version": 3
+      }
+    ],
+    "runbook": {
+      "authored_by": "sre-01",
+      "content": "Throttle the batch reconciliation job and add the missing index on orders(created_at) before re-enabling writes.",
+      "version": 1
+    },
+    "symptoms": [
+      "replica lag climbing past 30s",
+      "connection pool exhausted, requests queueing",
+      "p99 read latency above 800ms"
+    ],
+    "title": "Query latency regression on the orders DB"
+  },
+  {
+    "category": "disk-full",
+    "fact_key": "runbook:disk-full:fix",
+    "id": "inc-0003",
+    "revisions": [
+      {
+        "content": "Never truncate the active log file while the process holds it — the space is not reclaimed until restart. Rotate first, then delete the rotated files, then extend the volume.",
+        "reason": "truncating an open file did not free space and caused a second page",
+        "supersedes": 1,
+        "version": 2
+      }
+    ],
+    "runbook": {
+      "authored_by": "ops-01",
+      "content": "Truncate rotated logs older than 3 days, then extend the LVM volume by 20GB and restart the ingest workers.",
+      "version": 1
+    },
+    "symptoms": [
+      "core dumps accumulating under /var/crash",
+      "writes failing with ENOSPC",
+      "df reports 98% on /var/log"
+    ],
+    "title": "Disk usage at 98% on the log volume"
+  },
+  {
+    "category": "cert-expired",
+    "fact_key": "runbook:cert-expired:fix",
+    "id": "inc-0004",
+    "revisions": [
+      {
+        "content": "The internal CA moved to ACME; request certs via the cert-manager Issuer rather than the old manual signing script.",
+        "reason": "manual signing was deprecated after the ACME migration",
+        "supersedes": 1,
+        "version": 2
+      },
+      {
+        "content": "Rolling the pods drops in-flight connections — use the envoy hot-reload endpoint to swap the cert with zero downtime instead of a pod restart.",
+        "reason": "the pod restart caused an avoidable connection reset storm",
+        "supersedes": 2,
+        "version": 3
+      }
+    ],
+    "runbook": {
+      "authored_by": "ops-01",
+      "content": "Rotate the intermediate, rebuild the full chain, and reload envoy without a restart using the hot-reload endpoint.",
+      "version": 1
+    },
+    "symptoms": [
+      "clients failing with CERTIFICATE_EXPIRED",
+      "cert expiry alert fired 2 hours before outage"
+    ],
+    "title": "Handshake failures after a cert rotation"
+  },
+  {
+    "category": "disk-full",
+    "fact_key": "runbook:disk-full:fix",
+    "id": "inc-0005",
+    "revisions": [
+      {
+        "content": "The archive bucket now enforces object-lock; stage dumps in the quarantine prefix instead so retention policy applies.",
+        "reason": "archive bucket policy changed to WORM storage",
+        "supersedes": 1,
+        "version": 2
+      },
+      {
+        "content": "Never truncate the active log file while the process holds it — the space is not reclaimed until restart. Rotate first, then delete the rotated files, then extend the volume.",
+        "reason": "truncating an open file did not free space and caused a second page",
+        "supersedes": 2,
+        "version": 3
+      }
+    ],
+    "runbook": {
+      "authored_by": "sre-03",
+      "content": "Move core dumps to the archive bucket and re-enable logrotate with a hard 7-day retention.",
+      "version": 1
+    },
+    "symptoms": [
+      "df reports 98% on /var/log",
+      "core dumps accumulating under /var/crash"
+    ],
+    "title": "Disk usage at 98% on the log volume"
+  },
+  {
+    "category": "db-latency",
+    "fact_key": "runbook:db-latency:fix",
+    "id": "inc-0006",
+    "revisions": [
+      {
+        "content": "Do NOT raise the pool size blindly — that masked a runaway analytics query last time. First identify the offending query in pg_stat_activity and cancel it, then fail reads to the replica.",
+        "reason": "raising the pool size hid the real cause and delayed recovery",
+        "supersedes": 1,
+        "version": 2
+      },
+      {
+        "content": "The warm replica is now read-only by default; promote it with cockroach node decommission only after checking replication factor.",
+        "reason": "replica topology changed after the multi-region migration",
+        "supersedes": 2,
+        "version": 3
+      }
+    ],
+    "runbook": {
+      "authored_by": "ops-01",
+      "content": "Fail reads over to the warm replica, then raise the pool size on the primary from 50 to 120 and restart the pgbouncer sidecar.",
+      "version": 1
+    },
+    "symptoms": [
+      "slow-query log filling with full table scans",
+      "replica lag climbing past 30s",
+      "connection pool exhausted, requests queueing"
+    ],
+    "title": "Primary database p99 latency spike"
+  },
+  {
+    "category": "network-partition",
+    "fact_key": "runbook:network-partition:fix",
+    "id": "inc-0007",
+    "revisions": [
+      {
+        "content": "Draining a zone during a partition can tip the remaining zones out of quorum — verify the replication factor allows losing a zone FIRST, otherwise hedge requests instead of draining.",
+        "reason": "an eager drain nearly caused a quorum loss",
+        "supersedes": 1,
+        "version": 2
+      }
+    ],
+    "runbook": {
+      "authored_by": "sre-01",
+      "content": "Increase the discovery TTL temporarily and enable request hedging until the link stabilises.",
+      "version": 1
+    },
+    "symptoms": [
+      "quorum warnings from the coordination layer",
+      "retries storming as timeouts cascade"
+    ],
+    "title": "Split-brain risk from a flapping link"
+  },
+  {
+    "category": "cert-expired",
+    "fact_key": "runbook:cert-expired:fix",
+    "id": "inc-0008",
+    "revisions": [
+      {
+        "content": "Rolling the pods drops in-flight connections — use the envoy hot-reload endpoint to swap the cert with zero downtime instead of a pod restart.",
+        "reason": "the pod restart caused an avoidable connection reset storm",
+        "supersedes": 1,
+        "version": 2
+      },
+      {
+        "content": "The internal CA moved to ACME; request certs via the cert-manager Issuer rather than the old manual signing script.",
+        "reason": "manual signing was deprecated after the ACME migration",
+        "supersedes": 2,
+        "version": 3
+      }
+    ],
+    "runbook": {
+      "authored_by": "sre-01",
+      "content": "Rotate the intermediate, rebuild the full chain, and reload envoy without a restart using the hot-reload endpoint.",
+      "version": 1
+    },
+    "symptoms": [
+      "gateway returning 526 to all TLS traffic",
+      "clients failing with CERTIFICATE_EXPIRED"
+    ],
+    "title": "Expired intermediate cert breaking mTLS"
+  },
+  {
+    "category": "db-latency",
+    "fact_key": "runbook:db-latency:fix",
+    "id": "inc-0009",
+    "revisions": [
+      {
+        "content": "Do NOT raise the pool size blindly — that masked a runaway analytics query last time. First identify the offending query in pg_stat_activity and cancel it, then fail reads to the replica.",
+        "reason": "raising the pool size hid the real cause and delayed recovery",
+        "supersedes": 1,
+        "version": 2
+      }
+    ],
+    "runbook": {
+      "authored_by": "sre-02",
+      "content": "Fail reads over to the warm replica, then raise the pool size on the primary from 50 to 120 and restart the pgbouncer sidecar.",
+      "version": 1
+    },
+    "symptoms": [
+      "replica lag climbing past 30s",
+      "slow-query log filling with full table scans",
+      "connection pool exhausted, requests queueing"
+    ],
+    "title": "Connection-pool saturation on the primary"
+  }
+]
