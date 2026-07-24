@@ -126,11 +126,14 @@ def test_e1_dry_run_metrics_are_well_formed():
     assert m["experiment"] == "E1"
     assert m["backend"] == "crdb_serializable"
     assert m["n_agents"] == 5
-    assert m["writes"] == 5 * 5
-    # The serializable-like in-memory oracle loses nothing and diverges nothing.
+    assert m["writes_attempted"] == 5 * 5
+    assert m["writes_acknowledged"] == 5 * 5  # serializable: nothing torn
+    # The serializable-like in-memory oracle loses nothing, diverges nothing, and
+    # exposes no intermediate state — the number E1 predicts is exactly zero.
     assert m["inconsistencies_per_1000"] == 0.0
     assert m["lost_updates"] == 0
     assert m["divergence"] == 0
+    assert m["dirty_reads"] == 0
     assert isinstance(m["p95_write_ms"], float)
     assert isinstance(m["p95_read_ms"], float)
     # A dry run is never authoritative and is captured, not persisted.
@@ -138,16 +141,21 @@ def test_e1_dry_run_metrics_are_well_formed():
     assert m["authoritative"] is False
 
 
-def test_e1_naive_backend_dry_run_is_well_formed():
-    """The naive baseline runs too; single-threaded it simply races with nobody."""
+def test_e1_naive_backend_exhibits_divergence():
+    """The naive store's torn writes leave real vector<->row divergence — measured,
+    not tautological. Single-threaded there are no concurrent writers, so lost
+    updates and dirty reads are 0, but the injected mid-write failures still tear."""
     record = run_once(
         "E1", "E1_naive_n5", 0, deps=_deps(), recorder=InMemoryRecorder(), dry_run=True
     )
     m = record.metrics
     assert m["backend"] == "naive_baseline"
-    assert m["writes"] == 25
-    assert m["dirty_reads"] == 0
-    assert m["inconsistencies_per_1000"] >= 0.0
+    assert m["writes_attempted"] == 25
+    assert m["writes_torn"] >= 1  # tearing is deterministic and non-empty
+    assert m["divergence"] == m["writes_torn"]  # every torn write = one row w/o vector
+    assert m["lost_updates"] == 0  # no concurrency single-threaded
+    assert m["dirty_reads"] == 0  # no other in-flight writer to observe
+    assert m["inconsistencies_per_1000"] > 0.0  # the naive store is NOT clean
 
 
 # -----------------------------------------------------------------------------

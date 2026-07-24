@@ -34,7 +34,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
+import threading
 import uuid
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -50,11 +52,13 @@ from core.embeddings import DeterministicEmbedder, Embedder
 from core.immune import ImmuneSystem
 from core.models import MemoryEvent, MemoryKind, utcnow
 from experiments.arms import EXPERIMENTS, Arm, get_arm
-from experiments.baselines import NaiveNonTransactionalStore, build_naive_backend
+from experiments.baselines import (
+    NaiveNonTransactionalStore,
+    TornWrite,
+    build_naive_backend,
+    find_divergences,
+)
 from experiments.scoring import (
-    StoreState,
-    WriteObservation,
-    count_inconsistencies,
     detection_rate,
     false_positive_rate,
     p95,
@@ -65,6 +69,12 @@ from scenarios.loader import (
     load_poison_suite,
     poison_to_event,
 )
+
+#: Fraction of E1 writes subjected to a mid-write failure (torn write) so the
+#: naive store's vector↔row divergence is exercised, not merely possible. Applied
+#: only to the naive backend; CockroachDB's atomic transaction rolls such a failed
+#: write back, leaving no torn row (verified after the run).
+E1_TEAR_FRACTION = 0.1
 
 __all__ = [
     "Deps",
@@ -297,20 +307,59 @@ def _run_e1(
         raise RunnerError(f"E1 arm {arm.name!r} has no fleet_size")
 
     is_naive = arm.backend == "naive_baseline"
-    store: Any = deps.make_naive_store(config) if is_naive else deps.make_adapter(config)
+
+    # Isolate this run in shared storage: a unique tag prefixes every agent id and
+    # content so a CockroachDB run's inconsistency count is derived ONLY from this
+    # run's writes, never contaminated by rows a prior run left in the table.
+    rng = random.Random(seed)
+    run_tag = f"e1-{arm.name}-s{seed}-{uuid.uuid4().hex[:8]}"
+    agent_ids = [f"{run_tag}-agent-{i}" for i in range(n)]
+    tasks: list[tuple[str, str]] = [
+        (aid, f"{run_tag} agent={i} write={w}")
+        for i, aid in enumerate(agent_ids)
+        for w in range(E1_WRITES_PER_AGENT)
+    ]
+
+    # Deterministically pick writes to TEAR (mid-write failure -> row without its
+    # vector) so divergence is measured, not merely structurally possible. Naive
+    # backend only — CockroachDB rolls a failed write back.
+    tear_contents: set[str] = set()
+    if is_naive:
+        k = max(1, int(len(tasks) * E1_TEAR_FRACTION))
+        tear_contents = {c for _, c in rng.sample(tasks, k=k)}
+
+    # Dirty-read detection: a reader fires when a write has committed its row +
+    # order entry but not its vector, and records any intermediate state it sees.
+    dirty_reads = 0
+    dirty_lock = threading.Lock()
+
+    def _reader_hook(mem_id: str) -> None:
+        # A dirty read is observing ANOTHER write's intermediate state — exclude the
+        # write currently at its own mid-point (it is legitimately unfinished, not a
+        # read of someone else's torn state). Single-threaded there is never another
+        # in-flight write, so this stays 0; concurrency is what produces dirty reads.
+        nonlocal dirty_reads
+        if isinstance(store, NaiveNonTransactionalStore):
+            others = [m for m in store.sample_intermediate() if m != mem_id]
+            if others:
+                with dirty_lock:
+                    dirty_reads += 1
+
+    if is_naive:
+        store: Any = NaiveNonTransactionalStore(
+            embedding_dim=config.embedding_dim,
+            tear_contents=tear_contents,
+            pre_vector_hook=_reader_hook,
+            race_delay=0.001 if deps.parallel else 0.0,
+        )
+    else:
+        store = deps.make_adapter(config)
+
     try:
-        agent_ids = [f"e1-agent-{i}" for i in range(n)]
         for aid in agent_ids:
             store.register_agent(aid, "sre", f"hash-{aid}")
 
-        # Build every write payload up front (deterministic, seeded) so the only
-        # thing that races is the storage op itself.
-        tasks: list[tuple[str, str]] = []
-        for i, aid in enumerate(agent_ids):
-            for w in range(E1_WRITES_PER_AGENT):
-                tasks.append((aid, f"E1 seed={seed} agent={i} write={w}"))
-
-        def _do_write(task: tuple[str, str]) -> tuple[str, str, float]:
+        def _do_write(task: tuple[str, str]) -> tuple[str, str, float] | None:
             aid, content = task
             event = MemoryEvent(
                 agent_id=aid,
@@ -319,7 +368,12 @@ def _run_e1(
                 embedding=deps.embedder.embed(content),
             )
             start = perf_counter()
-            mem_id = store.write_episode(aid, event)
+            try:
+                mem_id = store.write_episode(aid, event)
+            except TornWrite:
+                # A mid-write failure: unacknowledged. The divergence it left is
+                # counted from the store's physical state below, not here.
+                return None
             return mem_id, content, (perf_counter() - start) * 1000.0
 
         if deps.parallel and n > 1:
@@ -328,22 +382,40 @@ def _run_e1(
         else:
             results = [_do_write(task) for task in tasks]
 
-        observed = [
-            WriteObservation(key=mem_id, value=content, has_vector=True)
-            for mem_id, content, _ in results
-        ]
-        write_ms = [ms for _, _, ms in results]
+        acknowledged = [r for r in results if r is not None]
+        ack_ids = [mem_id for mem_id, _, _ in acknowledged]
+        write_ms = [ms for _, _, ms in acknowledged]
 
-        events = store.list_memories(status=None)
-        state = StoreState(
-            rows={e.mem_id: e.content for e in events},
-            vector_keys=[e.mem_id for e in events if e.embedding],
-        )
-        report = count_inconsistencies(observed, state)
+        # Derive the three phenomena from the store's ACTUAL state, per source —
+        # lost updates from the read-visible order, divergence from the physical
+        # rows-vs-vectors split, dirty reads from the reader hook. Deriving all
+        # three from one enumeration (list_memories) double-counts a lost update
+        # as a divergence and hides real torn writes (external review finding).
+        if is_naive:
+            visible = store.visible_ids()
+            lost_updates = sum(1 for mem_id in ack_ids if mem_id not in visible)
+            rows_without_vector, vectors_without_row = find_divergences(store)
+            divergence = len(rows_without_vector) + len(vectors_without_row)
+        else:
+            # Serializable backend: every acknowledged write is atomic, so it must
+            # round-trip WITH its vector, be visible, and leave no torn row. We
+            # VERIFY this rather than assume it — the whole point of E1.
+            lost_updates = 0
+            divergence = 0
+            for mem_id in ack_ids:
+                stored = store.get_memory(mem_id)
+                if stored.embedding is None or len(stored.embedding) != config.embedding_dim:
+                    divergence += 1  # a serializable store must never do this
+            visible_ids = {m.mem_id for m in store.list_memories(status=None)}
+            lost_updates = sum(1 for mem_id in ack_ids if mem_id not in visible_ids)
+
+        total = lost_updates + divergence + dirty_reads
+        attempted = len(tasks)
+        per_1000 = (total / attempted * 1000.0) if attempted else 0.0
 
         read_ms: list[float] = []
         for aid in agent_ids:
-            query = deps.embedder.embed(f"E1 query for {aid}")
+            query = deps.embedder.embed(f"{run_tag} query for {aid}")
             start = perf_counter()
             store.query_semantic(aid, query, k=5, budget_tokens=config.retrieval_budget_tokens)
             read_ms.append((perf_counter() - start) * 1000.0)
@@ -354,12 +426,14 @@ def _run_e1(
             "seed": seed,
             "backend": arm.backend,
             "n_agents": n,
-            "writes": len(observed),
-            "inconsistencies_per_1000": report.per_1000,
-            "lost_updates": report.lost_updates,
-            "divergence": report.divergence,
-            "dirty_reads": report.dirty_reads,
-            "p95_write_ms": p95(write_ms),
+            "writes_attempted": attempted,
+            "writes_acknowledged": len(acknowledged),
+            "writes_torn": attempted - len(acknowledged) if is_naive else 0,
+            "inconsistencies_per_1000": per_1000,
+            "lost_updates": lost_updates,
+            "divergence": divergence,
+            "dirty_reads": dirty_reads,
+            "p95_write_ms": p95(write_ms) if write_ms else 0.0,
             "p95_read_ms": p95(read_ms),
             "parallel": deps.parallel,
             "dry_run": dry_run,

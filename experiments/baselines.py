@@ -60,6 +60,17 @@ from experiments.arms import get_arm
 _NON_RETRIEVABLE = {MemoryStatus.SUPERSEDED, MemoryStatus.QUARANTINED, MemoryStatus.ARCHIVED}
 
 
+class TornWrite(RuntimeError):
+    """A non-transactional write that failed after the row but before the vector.
+
+    The row (and its order entry + provenance) is already committed and visible,
+    but the embedding was never written — a vector↔row divergence. CockroachDB's
+    atomic transaction makes this impossible: an aborted write rolls the row back.
+    The E1 runner injects these (via ``tear_contents``) to elicit the divergence
+    the naive store is structurally prone to, and catches them as failed writes.
+    """
+
+
 def _cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
     """Cosine distance in [0, 2]; a zero vector is defined as maximally distant."""
     dot = sum(x * y for x, y in zip(a, b, strict=True))
@@ -112,11 +123,26 @@ class NaiveNonTransactionalStore:
         id_factory: Callable[[], str] | None = None,
         race_delay: float = 0.0,
         interleave: Callable[[str], None] | None = None,
+        tear_contents: set[str] | None = None,
+        pre_vector_hook: Callable[[str], None] | None = None,
     ) -> None:
         self.embedding_dim = embedding_dim
         self._new_id = id_factory or (lambda: str(uuid.uuid4()))
         self._race_delay = race_delay
         self._interleave = interleave
+        # Invoked when the row + order entry + provenance are committed and visible
+        # but the vector is not yet written — the exact instant a concurrent reader
+        # can observe intermediate state (a dirty read). The E1 runner points it at
+        # a reader that samples sample_intermediate(); default no-op.
+        self._pre_vector_hook = pre_vector_hook
+        # Contents whose write must TEAR: the row (and its order entry + provenance)
+        # is committed, then the write fails BEFORE the vector — leaving a row with
+        # no embedding. This is the vector↔row divergence a non-transactional
+        # store leaves on a mid-write failure, and exactly what CockroachDB's
+        # atomic transaction makes impossible (an aborted txn rolls the row back).
+        # Keyed by content (not a racy counter) so tearing is deterministic under
+        # real threads. Cleared reads/queries skip torn rows rather than crashing.
+        self._tear_contents = tear_contents or set()
 
         # State split with NO unifying lock — the whole point of this store.
         self._agents: dict[str, dict[str, str]] = {}
@@ -126,6 +152,10 @@ class NaiveNonTransactionalStore:
         self._order: list[str] = []
         self._canonical: dict[str, CanonicalFact] = {}
         self._quarantine_log: list[QuarantineRecord] = []
+        #: Ids left permanently row-without-vector by a torn write. Excluded from
+        #: dirty-read sampling so a permanent divergence is not miscounted as a
+        #: transient dirty read (they are distinct E1 phenomena).
+        self._torn: set[str] = set()
 
     # ------------------------------------------------------------------ window
     def _invoke_window(self, mem_id: str) -> None:
@@ -200,6 +230,17 @@ class NaiveNonTransactionalStore:
             hop_count=event.hop_count,
             created_at=stored.created_at,
         )
+        if self._pre_vector_hook is not None:
+            # Row + order + provenance visible, vector pending: a reader here sees
+            # intermediate state (dirty read).
+            self._pre_vector_hook(mem_id)
+        if event.content in self._tear_contents:
+            # TORN WRITE: row + order + provenance are committed and visible, but
+            # the write fails here — the vector (step 4) is never written. The row
+            # persists WITHOUT its embedding: a real vector↔row divergence. The
+            # caller sees a failed (unacknowledged) write; the divergence remains.
+            self._torn.add(mem_id)
+            raise TornWrite(mem_id)
         self._vectors[mem_id] = (  # step 4: vector LAST, after another window point
             list(event.embedding) if event.embedding is not None else []
         )
@@ -213,6 +254,22 @@ class NaiveNonTransactionalStore:
             stored.meta.update(meta)
 
     # ------------------------------------------------------------------- reads
+    def sample_intermediate(self) -> list[str]:
+        """Ids a concurrent reader would see mid-write: in ``_order`` (row + order
+        committed) but with no vector yet, and NOT a permanently torn row.
+
+        In a serializable store this set is always empty — a reader never observes
+        a write in progress. In this non-transactional store it is non-empty during
+        the window between committing the order entry and writing the vector, which
+        is the dirty read (read of intermediate state) E1 measures. Torn rows are
+        excluded: they are a divergence, not a transient dirty read."""
+        return [m for m in self._order if not self._vectors.get(m) and m not in self._torn]
+
+    def visible_ids(self) -> set[str]:
+        """Ids reachable via ``_order`` — what reads can see. A write clobbered out
+        of ``_order`` (a lost update) is in ``_rows`` but not here."""
+        return {mem_id for mem_id in self._order if mem_id in self._rows}
+
     def _enumerate(self) -> list[MemoryEvent]:
         """Rows reachable via ``_order`` only — so a lost mem_id is invisible."""
         out: list[MemoryEvent] = []
