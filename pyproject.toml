@@ -77,6 +77,12 @@ ignore = ["E501"]
 [tool.ruff.lint.isort]
 known-first-party = ["core", "adapters", "ingest", "agents", "experiments", "scenarios"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom puts Depends()/Header() in argument
+# defaults on purpose; they are evaluated per-request by the framework, not once
+# at import. Exempt them from B008 rather than litter the write path with noqa.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query", "fastapi.Path"]
+
 [tool.mypy]
 python_version = "3.12"
 warn_unused_ignores = true
