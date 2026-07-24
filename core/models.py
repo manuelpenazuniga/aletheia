@@ -129,6 +129,12 @@ class MemoryEvent:
             raise ValueError("MemoryEvent.hop_count must be non-negative")
         if self.cost_tokens is None:
             self.cost_tokens = estimate_tokens(self.content)
+        elif self.cost_tokens <= 0:
+            # A non-positive retention cost is nonsensical and actively dangerous:
+            # a negative cost reads as credit in the retrieval budget, letting a
+            # single poisoned memory pull in unlimited others, and it corrupts the
+            # forgetting footprint. Reject it at construction.
+            raise ValueError("MemoryEvent.cost_tokens must be positive")
         # Enum coercion, so callers may pass plain strings from JSON payloads.
         self.kind = MemoryKind(self.kind)
         self.status = MemoryStatus(self.status)

@@ -35,6 +35,13 @@ def test_explicit_cost_tokens_is_preserved():
     assert event.cost_tokens == 99
 
 
+@pytest.mark.parametrize("bad", [0, -1, -100])
+def test_non_positive_cost_tokens_is_rejected(bad):
+    """A negative cost reads as credit in the retrieval budget — reject it."""
+    with pytest.raises(ValueError, match="cost_tokens must be positive"):
+        MemoryEvent(agent_id="sre-1", content="x", cost_tokens=bad)
+
+
 def test_string_kind_and_status_are_coerced_to_enums():
     """Payloads arriving as JSON from the ingest service must land as enums."""
     event = MemoryEvent(agent_id="a", content="c", kind="semantic", status="active")
