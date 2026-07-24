@@ -15,8 +15,30 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 CORE_DIR = REPO_ROOT / "core"
 
-#: Infrastructure that must never be imported from the portable core.
-FORBIDDEN_IN_CORE = {"boto3", "botocore", "psycopg", "psycopg2", "fastapi", "uvicorn", "httpx"}
+#: Infrastructure that must never be imported from the portable core: cloud SDKs,
+#: database drivers, HTTP clients, and every web framework we might plausibly reach
+#: for. The list is deliberately broad so a future mistake is caught by name.
+FORBIDDEN_IN_CORE = {
+    # cloud / db / http
+    "boto3",
+    "botocore",
+    "psycopg",
+    "psycopg2",
+    "httpx",
+    "requests",
+    "aiohttp",
+    # web frameworks / servers
+    "fastapi",
+    "uvicorn",
+    "starlette",
+    "flask",
+    "django",
+    "litestar",
+    "sanic",
+    "tornado",
+    "quart",
+    "bottle",
+}
 
 
 def _core_modules() -> list[pathlib.Path]:

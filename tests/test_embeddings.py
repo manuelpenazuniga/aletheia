@@ -75,3 +75,19 @@ def test_batch_preserves_order_and_dimension():
 def test_dimension_must_be_positive():
     with pytest.raises(ValueError):
         DeterministicEmbedder(dim=0)
+
+
+def test_distinct_non_ascii_texts_get_distinct_vectors():
+    """Non-English text must not all collapse to the empty-token fallback."""
+    embedder = DeterministicEmbedder(dim=64, seed=0)
+    assert embedder.embed("你好世界") != embedder.embed("مرحبا")
+    assert embedder.embed("你好世界") != embedder.embed("   ")
+
+
+def test_large_seed_does_not_overflow_the_hash_key():
+    """A seed too large to be a BLAKE2b key must still produce a stable vector."""
+    embedder = DeterministicEmbedder(dim=16, seed=10**40)
+    a = embedder.embed("database latency")
+    b = DeterministicEmbedder(dim=16, seed=10**40).embed("database latency")
+    assert a == b
+    assert math.isclose(sum(v * v for v in a), 1.0, rel_tol=1e-9)

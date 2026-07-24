@@ -20,7 +20,12 @@ from typing import Protocol, runtime_checkable
 
 from core.config import DEFAULT_EMBEDDING_DIM
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# Unicode word characters, not just [a-z0-9], so non-English text (and digits in
+# other scripts) tokenizes into distinct tokens instead of collapsing to the
+# empty-token fallback. This embedder is an offline test/dev stand-in — the SRE
+# corpus is English — but it should not silently give every non-ASCII string the
+# same vector.
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
 @runtime_checkable
@@ -56,6 +61,10 @@ class DeterministicEmbedder:
             raise ValueError("dim must be positive")
         self._dim = dim
         self._seed = seed
+        # BLAKE2b rejects a key longer than 64 bytes; a large seed rendered to a
+        # string would overflow it. Derive a fixed-length key from the seed so any
+        # int is accepted while staying deterministic.
+        self._key = hashlib.blake2b(str(seed).encode(), digest_size=16).digest()
 
     @property
     def dim(self) -> int:
@@ -75,9 +84,7 @@ class DeterministicEmbedder:
             return vec
 
         for token in tokens:
-            digest = hashlib.blake2b(
-                token.encode("utf-8"), digest_size=8, key=str(self._seed).encode()
-            ).digest()
+            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8, key=self._key).digest()
             value = int.from_bytes(digest, "big")
             index = value % self._dim
             sign = 1.0 if (value >> 63) & 1 else -1.0
