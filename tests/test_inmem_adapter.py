@@ -11,7 +11,7 @@ import threading
 import pytest
 
 from adapters.memory_inmem import InMemoryAdapter, cosine_distance
-from core.adapter import AgentNotRegistered, MemoryNotFound
+from core.adapter import AgentNotRegistered, DuplicateMemory, MemoryNotFound
 from core.models import MemoryEvent, MemoryStatus, QuarantineReason
 
 from .conftest import TEST_DIM
@@ -58,6 +58,22 @@ def test_stored_memories_are_copies(adapter, make_event):
     fetched = adapter.get_memory(mem_id)
     fetched.content = "tampered"
     assert adapter.get_memory(mem_id).content == "original"
+
+
+def test_write_rejects_a_duplicate_mem_id(adapter, make_event):
+    """Overwriting an existing memory would destroy it — the PK forbids it."""
+    adapter.write_episode("sre-1", make_event("first", mem_id="fixed-id"))
+    with pytest.raises(DuplicateMemory):
+        adapter.write_episode("sre-1", make_event("second", mem_id="fixed-id"))
+    assert adapter.get_memory("fixed-id").content == "first"
+
+
+def test_write_does_not_alias_the_caller_meta(adapter, make_event):
+    """Mutating the caller's event.meta after a write must not change stored state."""
+    event = make_event("with meta", meta={"incident": "INC-1"})
+    mem_id = adapter.write_episode("sre-1", event)
+    event.meta["incident"] = "TAMPERED"
+    assert adapter.get_memory(mem_id).meta["incident"] == "INC-1"
 
 
 def test_upsert_embedding_attaches_a_vector_after_the_fact(adapter, embedder):
@@ -212,6 +228,26 @@ def test_quarantine_rejects_an_unknown_reason(adapter, make_event):
         adapter.quarantine(mem_id, "vibes", "detector", {})
 
 
+def test_quarantine_is_atomic_on_an_invalid_reason(adapter, make_event, embedder):
+    """A rejected reason must leave the memory active and unlogged, not hidden."""
+    mem_id = adapter.write_episode("sre-1", make_event("still legitimate"))
+    with pytest.raises(ValueError):
+        adapter.quarantine(mem_id, "not-a-reason", "detector", {})
+    assert adapter.get_memory(mem_id).status is MemoryStatus.ACTIVE
+    assert adapter.quarantine_log() == []
+    assert mem_id in {
+        h.mem_id
+        for h in adapter.query_semantic("sre-1", embedder.embed("still legitimate"), 5, 4000)
+    }
+
+
+def test_quarantine_log_payloads_cannot_be_mutated_by_reference(adapter, make_event):
+    mem_id = adapter.write_episode("sre-1", make_event("x"))
+    adapter.quarantine(mem_id, QuarantineReason.INJECTION_PATTERN, "regex", {"p": "orig"})
+    adapter.quarantine_log()[0].payload["p"] = "tampered"
+    assert adapter.quarantine_log()[0].payload["p"] == "orig"
+
+
 def test_archive_invokes_the_offload_callback(counter_ids, embedder):
     """Forgetting offloads to S3 through an injected callback — never an import."""
     archived: list[str] = []
@@ -235,6 +271,31 @@ def test_archive_invokes_the_offload_callback(counter_ids, embedder):
     assert archived == ["low value chatter"]
     assert store.get_memory(mem_id).status is MemoryStatus.ARCHIVED
     assert store.query_semantic("sre-1", embedder.embed("low value chatter"), 5, 4000) == []
+
+
+def test_archive_leaves_the_memory_active_if_the_offload_fails(counter_ids, embedder):
+    """A failed S3 upload must not leave a memory hidden as 'archived' with
+    nothing behind it — the row stays active and retrievable, retryable."""
+
+    def failing_offload(_mem):
+        raise RuntimeError("S3 down")
+
+    store = InMemoryAdapter(
+        embedding_dim=TEST_DIM, id_factory=counter_ids, archive_callback=failing_offload
+    )
+    store.register_agent("sre-1", "sre", "hash")
+    mem_id = store.write_episode(
+        "sre-1",
+        MemoryEvent(agent_id="sre-1", content="keep me", embedding=embedder.embed("keep me")),
+    )
+
+    with pytest.raises(RuntimeError, match="S3 down"):
+        store.archive(mem_id)
+
+    assert store.get_memory(mem_id).status is MemoryStatus.ACTIVE
+    assert mem_id in {
+        h.mem_id for h in store.query_semantic("sre-1", embedder.embed("keep me"), 5, 4000)
+    }
 
 
 def test_nothing_is_ever_deleted(adapter, make_event):

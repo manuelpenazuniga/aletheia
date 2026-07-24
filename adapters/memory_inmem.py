@@ -18,7 +18,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
-from core.adapter import AgentNotRegistered, MemoryNotFound
+from core.adapter import AgentNotRegistered, DuplicateMemory, MemoryNotFound
 from core.config import DEFAULT_EMBEDDING_DIM
 from core.models import (
     CanonicalFact,
@@ -120,10 +120,16 @@ class InMemoryAdapter:
                 raise MemoryNotFound(f"parent memory does not exist: {event.parent_mem!r}")
 
             mem_id = event.mem_id or self._new_id()
+            if mem_id in self._memories:
+                # The production schema's PRIMARY KEY would reject this; the oracle
+                # must too. Silently overwriting would destroy a memory and its
+                # provenance — a violation of "nothing is deleted", not a write.
+                raise DuplicateMemory(f"memory already exists: {mem_id!r}")
             stored = replace(
                 event,
                 mem_id=mem_id,
                 embedding=list(event.embedding) if event.embedding is not None else None,
+                meta=dict(event.meta),
             )
             self._memories[mem_id] = stored
             self._provenance[mem_id] = ProvenanceLink(
@@ -241,27 +247,34 @@ class InMemoryAdapter:
             old.superseded_by = new_mem_id
 
     def quarantine(self, mem_id: str, reason: str, detector: str, payload: dict) -> None:
+        # Validate the reason BEFORE mutating status: an invalid reason must leave
+        # the memory exactly as it was, never hidden-and-unlogged. The record is
+        # built first, the status flips last, so the transition is all-or-nothing.
+        record = QuarantineRecord(
+            q_id=self._new_id(),
+            mem_id=mem_id,
+            reason=QuarantineReason(reason),
+            detector=detector,
+            payload=dict(payload or {}),
+        )
         with self._lock:
             stored = self._require_memory(mem_id)
             stored.status = MemoryStatus.QUARANTINED
-            self._quarantine_log.append(
-                QuarantineRecord(
-                    q_id=self._new_id(),
-                    mem_id=mem_id,
-                    reason=QuarantineReason(reason),
-                    detector=detector,
-                    payload=dict(payload or {}),
-                )
-            )
+            self._quarantine_log.append(record)
 
     def archive(self, mem_id: str) -> None:
+        # The offload must succeed BEFORE the row is marked archived, or a failed
+        # S3 upload would leave a memory hidden as "archived" with nothing behind
+        # it — the exact inconsistency the outbox pattern exists to prevent. So:
+        # snapshot -> offload (may raise, status untouched) -> flip status.
         with self._lock:
-            stored = self._require_memory(mem_id)
-            stored.status = MemoryStatus.ARCHIVED
-            snapshot = self._copy(stored)
-        # Callback outside the lock: the offload is I/O and must not block writers.
+            snapshot = self._copy(self._require_memory(mem_id))
         if self._archive_callback is not None:
+            # Outside the lock: the offload is I/O and must not block writers. If
+            # it raises, the memory stays active/visible and the caller can retry.
             self._archive_callback(snapshot)
+        with self._lock:
+            self._require_memory(mem_id).status = MemoryStatus.ARCHIVED
 
     # --------------------------------------------------------------- canonical
     def get_canonical(self, key: str) -> CanonicalFact | None:
@@ -301,7 +314,9 @@ class InMemoryAdapter:
     def quarantine_log(self) -> list[QuarantineRecord]:
         """Full rejection feed, newest last — powers the immune panel. (Extension.)"""
         with self._lock:
-            return list(self._quarantine_log)
+            # Copy the payload dicts: the records are frozen but their dicts are
+            # not, and a caller must not be able to edit the audit log by reference.
+            return [replace(r, payload=dict(r.payload)) for r in self._quarantine_log]
 
     # -------------------------------------------------------------------- misc
     def stats(self, agent_id: str | None = None) -> MemoryStats:

@@ -35,6 +35,14 @@ class MemoryNotFound(AdapterError):
     """Raised when an operation targets a mem_id that does not exist."""
 
 
+class DuplicateMemory(AdapterError):
+    """Raised when a write would collide with an existing mem_id.
+
+    Mirrors the ``memories`` PRIMARY KEY: overwriting an existing memory would
+    destroy it and its provenance, which "nothing is deleted" forbids.
+    """
+
+
 class AgentNotRegistered(AdapterError):
     """Raised when a write references an unknown agent.
 
