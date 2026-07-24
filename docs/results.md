@@ -44,6 +44,14 @@ Cells: mean ± σ over 3 repetitions.
 writing, loses no confirmed memory and corrupts nothing; the single-node baseline
 stops entirely.
 
+**Where this runs, stated up front.** CockroachDB Cloud does not expose node
+termination, so E2 runs against a self-operated three-node cluster
+(`docker-compose.chaos.yml`): real nodes, real Raft replication, `num_replicas = 3`,
+and `docker kill` (SIGKILL, no drain). Every other experiment runs against
+CockroachDB Cloud. Decided 2026-07-24 under CLAUDE.md §11, which authorises this
+substitution on the condition that it is stated openly — here, in the README and
+in the video.
+
 Integrity checksums are computed **before** the chaos event and verified after.
 
 | Event | Writes in flight | Memories lost | Corruption | Recovery s | Fleet kept operating |
@@ -119,7 +127,10 @@ do not appear in the tables above.
 | Local server version | CockroachDB CCL v25.4.13 | `smoke.py --local` |
 | Default isolation | `serializable` | `SHOW transaction_isolation` |
 | Vector round-trip | 1024 dims | `vector_dims(embedding)` after commit |
-| Vector index serving search | yes, `memories@idx_mem_embedding` | `EXPLAIN` in `smoke.py` |
+| Vector index serving *filtered* search | yes, `prefix spans: [/'active' - /'active']` | `EXPLAIN` in `smoke.py` |
+| Superseded memory leaves search | immediately, no reindex | `smoke.py` re-queries after supersede |
+| Chaos cluster forms | 3 live nodes, `num_replicas = 3` | `chaos/verify_cluster.sh` |
+| Survives a real node kill | yes — writes + search + supersede continue | `docker kill` then `smoke.py` |
 | Unit tests | 81 passed | `pytest` |
 | Cloud cluster | pendiente | requires provisioning |
 | Bedrock embeddings | pendiente | requires AWS model access |

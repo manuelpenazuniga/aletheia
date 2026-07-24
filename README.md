@@ -97,6 +97,16 @@ effect is not an artefact of our own synthetic corpus. The exact question IDs ar
 committed in [`scenarios/longmemeval/SUBSET.md`](scenarios/longmemeval/SUBSET.md)
 so the run is reproducible.
 
+**Where the chaos experiment runs — stated plainly.** CockroachDB Cloud manages
+nodes and does not expose node termination as a user operation, so E2 runs against
+a **three-node CockroachDB cluster we operate ourselves**
+([`docker-compose.chaos.yml`](docker-compose.chaos.yml)) rather than against the
+managed cluster. Nothing about the failure is simulated: three real nodes, real
+Raft replication with `num_replicas = 3`, and `docker kill` sends SIGKILL with no
+drain — a harsher event than a managed platform would ever hand us. Every other
+experiment runs against CockroachDB Cloud. We would rather explain an honest
+substitution than stage a kill.
+
 **Status: `pendiente` — experiments run in Phase 3.** See [`docs/results.md`](docs/results.md).
 
 ## Quickstart (local development)
@@ -123,6 +133,14 @@ Against the cloud cluster with real Bedrock embeddings:
 
 ```bash
 python smoke.py --cloud               # needs ALETHEIA_CRDB_DSN + AWS credentials
+```
+
+The three-node cluster used by the resilience experiment (E2):
+
+```bash
+docker compose -f docker-compose.chaos.yml up -d
+./chaos/verify_cluster.sh             # assert 3 live nodes before claiming anything
+docker kill aletheia-chaos-2          # a real node loss: SIGKILL, no drain
 ```
 
 `smoke.py` has two real modes and no fake one. `--local` uses a seeded, documented
