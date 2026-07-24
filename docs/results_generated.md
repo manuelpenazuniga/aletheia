@@ -16,12 +16,12 @@ Cells: mean ± sigma over repetitions.
 
 | Backend | N agents | Inconsist./1000 wr | p95 write ms | p95 read ms |
 |---|---:|---:|---:|---:|
-| Naive (non-transactional) | 5 | pendiente | pendiente | pendiente |
-| Naive | 20 | pendiente | pendiente | pendiente |
-| Naive | 50 | pendiente | pendiente | pendiente |
-| CockroachDB SERIALIZABLE | 5 | pendiente | pendiente | pendiente |
-| CockroachDB SERIALIZABLE | 20 | pendiente | pendiente | pendiente |
-| CockroachDB SERIALIZABLE | 50 | pendiente | pendiente | pendiente |
+| Naive (non-transactional) | 5 | 867 ± 37.7 | 1.44 ± 0.0286 | 0.28 ± 0.0355 |
+| Naive | 20 | 987 ± 30.9 | 3.56 ± 2.63 | 0.333 ± 0.0369 |
+| Naive | 50 | 975 ± 4.99 | 3.47 ± 0.917 | 0.586 ± 0.0934 |
+| CockroachDB SERIALIZABLE | 5 | 0 ± 0 | 13.4 ± 5.55 | 9.91 ± 4.53 |
+| CockroachDB SERIALIZABLE | 20 | 0 ± 0 | 39.3 ± 7.72 | 15.2 ± 1.58 |
+| CockroachDB SERIALIZABLE | 50 | 0 ± 0 | 107 ± 26.6 | 37.3 ± 19.8 |
 
 ## R2 — Chaos (E2)
 
