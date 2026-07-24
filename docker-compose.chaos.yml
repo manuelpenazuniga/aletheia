@@ -1,0 +1,91 @@
+# A REAL three-node CockroachDB cluster, for the resilience experiment (E2).
+#
+# Why this exists
+# ---------------
+# E2 is the thesis of the project: kill a node mid-consolidation with 20 agents
+# writing, and the fleet keeps remembering. CockroachDB Cloud manages nodes for
+# you and does not expose "terminate this node" as a user operation, so the
+# experiment runs here instead — on a cluster we operate ourselves.
+#
+# Nothing about the failure is simulated. These are three real CockroachDB nodes
+# with real Raft replication (default 3 replicas, so quorum survives losing one).
+# `docker kill` on a container is a genuine, ungraceful node loss.
+#
+# CLAUDE.md §11 authorises exactly this and attaches one condition, which is not
+# optional: the video must SAY OUT LOUD that the kill happens on a self-operated
+# three-node cluster and why. Never fake a kill; never let a viewer assume this
+# was the managed cluster.
+#
+# Isolated from the dev cluster on purpose: different compose project, different
+# host ports, different volumes. Bring one up without disturbing the other.
+#
+#   docker compose -f docker-compose.chaos.yml up -d
+#   ./chaos/verify_cluster.sh                      # confirm 3 live nodes
+#   ALETHEIA_CRDB_DSN=postgresql://root@localhost:26357/aletheia?sslmode=disable \
+#     ./infra/apply_ddl.sh
+#   docker kill aletheia-chaos-2                   # the real event (Phase 3)
+#   docker compose -f docker-compose.chaos.yml down -v
+
+name: aletheia-chaos
+
+x-crdb: &crdb
+  image: cockroachdb/cockroach:${CRDB_IMAGE_TAG:-v25.4.13}
+  # --join lists all three so any node can bootstrap the gossip network; losing
+  # one leaves the other two able to find each other.
+  environment:
+    COCKROACH_DISABLE_SPAWN_ON_FAILURE: "true"
+
+services:
+  crdb-1:
+    <<: *crdb
+    container_name: aletheia-chaos-1
+    command: >
+      start --insecure
+      --listen-addr=0.0.0.0:26257 --advertise-addr=crdb-1:26257
+      --http-addr=0.0.0.0:8080
+      --join=crdb-1:26257,crdb-2:26257,crdb-3:26257
+    ports:
+      - "${CHAOS_SQL_PORT_1:-26357}:26257"
+      - "${CHAOS_UI_PORT:-8181}:8080" # DB Console -> http://localhost:8181
+    volumes:
+      - chaos-data-1:/cockroach/cockroach-data
+
+  crdb-2:
+    <<: *crdb
+    container_name: aletheia-chaos-2 # the node the experiment kills
+    command: >
+      start --insecure
+      --listen-addr=0.0.0.0:26257 --advertise-addr=crdb-2:26257
+      --http-addr=0.0.0.0:8080
+      --join=crdb-1:26257,crdb-2:26257,crdb-3:26257
+    ports:
+      - "${CHAOS_SQL_PORT_2:-26358}:26257"
+    volumes:
+      - chaos-data-2:/cockroach/cockroach-data
+
+  crdb-3:
+    <<: *crdb
+    container_name: aletheia-chaos-3
+    command: >
+      start --insecure
+      --listen-addr=0.0.0.0:26257 --advertise-addr=crdb-3:26257
+      --http-addr=0.0.0.0:8080
+      --join=crdb-1:26257,crdb-2:26257,crdb-3:26257
+    ports:
+      - "${CHAOS_SQL_PORT_3:-26359}:26257"
+    volumes:
+      - chaos-data-3:/cockroach/cockroach-data
+
+  # Runs once to bootstrap the cluster, then exits. `cockroach init` is a no-op
+  # error on an already-initialised cluster, hence restart: "no".
+  init:
+    <<: *crdb
+    container_name: aletheia-chaos-init
+    command: init --insecure --host=crdb-1:26257
+    depends_on: [crdb-1, crdb-2, crdb-3]
+    restart: "no"
+
+volumes:
+  chaos-data-1:
+  chaos-data-2:
+  chaos-data-3:
