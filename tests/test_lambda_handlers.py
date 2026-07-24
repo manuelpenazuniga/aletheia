@@ -31,8 +31,14 @@ def test_consolidation_fails_clearly_without_a_dsn(monkeypatch):
         consolidation_handler.handler({}, None)
 
 
-def test_gossip_does_not_fake_work_while_unimplemented(monkeypatch):
-    """Better an explicit NotImplementedError than an invented metric."""
+def test_gossip_fails_clearly_without_a_dsn(monkeypatch):
+    """Flag on but no database configured must fail loudly, not silently no-op."""
     monkeypatch.setenv("ALETHEIA_ENABLE_GOSSIP", "true")
-    with pytest.raises(NotImplementedError, match="Phase 2"):
+    monkeypatch.delenv("ALETHEIA_CRDB_DSN", raising=False)
+    with pytest.raises(RuntimeError, match="ALETHEIA_CRDB_DSN"):
         gossip_handler.handler({}, None)
+
+
+def test_gossip_handler_imports_without_infrastructure():
+    """The module must import with no psycopg/boto3/DSN present (lazy adapter)."""
+    assert callable(gossip_handler.handler)
