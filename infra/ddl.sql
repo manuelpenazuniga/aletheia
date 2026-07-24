@@ -40,7 +40,25 @@ CREATE TABLE IF NOT EXISTS memories (
 
 -- Distributed vector index (C-SPANN). Freshness is immediate after
 -- insert/supersede — no separate vector store to fall out of sync with.
-CREATE VECTOR INDEX IF NOT EXISTS idx_mem_embedding ON memories (embedding);
+--
+-- `status` is a PREFIX COLUMN, not decoration. Retrieval must exclude superseded,
+-- quarantined and archived memories, and CockroachDB only routes a query through
+-- the vector index when the query's filters are covered by the index: measured
+-- against v25.4.13, `WHERE status = 'active' ORDER BY embedding <=> $1` plans as
+-- a FULL SCAN on an index defined over (embedding) alone, and as
+-- `vector search ... prefix spans: [/'active' - /'active']` on this one. The
+-- prefix also means a supersede moves the entry out of the searched partition
+-- immediately — the C-SPANN freshness property, made visible.
+--
+-- `vector_cosine_ops` pins cosine distance so the CockroachDB adapter and the
+-- InMemoryAdapter (which scores with cosine) agree by contract rather than by the
+-- coincidence that L2 and cosine rank unit-length vectors identically.
+-- Retrieval must therefore use the `<=>` operator.
+--
+-- Decided 2026-07-24 with the human, during Phase 0, while ddl.sql was still
+-- editable under §6 rule (c). Any later change goes to infra/migrations/.
+CREATE VECTOR INDEX IF NOT EXISTS idx_mem_embedding
+    ON memories (status, embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_mem_agent_status ON memories (agent_id, status);
 
 CREATE TABLE IF NOT EXISTS canonical_facts (

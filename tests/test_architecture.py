@@ -99,6 +99,42 @@ def test_embedding_dimension_matches_the_schema():
     assert int(match.group(1)) == AletheiaConfig().embedding_dim
 
 
+def test_vector_index_is_prefixed_by_status_and_uses_cosine():
+    """The index must cover the filter the fleet actually queries with.
+
+    Retrieval excludes superseded/quarantined/archived memories. Measured against
+    v25.4.13, an index on `(embedding)` alone makes that filtered query a full
+    scan; the `status` prefix makes it an index lookup pruned to the active
+    partition. `vector_cosine_ops` pins the distance function so this index and
+    InMemoryAdapter's cosine scoring agree by contract.
+    """
+    ddl = " ".join((REPO_ROOT / "infra" / "ddl.sql").read_text().split())
+    assert (
+        "CREATE VECTOR INDEX IF NOT EXISTS idx_mem_embedding ON memories (status, embedding vector_cosine_ops)"
+        in ddl
+    ), (
+        "idx_mem_embedding must be defined as (status, embedding vector_cosine_ops) "
+        "— see docs/architecture.md §8.1"
+    )
+
+
+def test_no_query_uses_the_l2_operator():
+    """`<->` is L2 and would silently bypass the cosine index (CLAUDE.md §8.2 decision).
+
+    L2 and cosine happen to rank unit-length vectors identically, so a drift here
+    would not fail a test elsewhere — it would just quietly stop using the index.
+    """
+    offenders = []
+    for path in list(REPO_ROOT.glob("*.py")) + [
+        p
+        for d in ("core", "adapters", "ingest", "agents", "experiments", "lambdas", "demoapp")
+        for p in (REPO_ROOT / d).rglob("*.py")
+    ]:
+        if "<->" in path.read_text():
+            offenders.append(str(path.relative_to(REPO_ROOT)))
+    assert not offenders, f"use the cosine operator `<=>`, not L2 `<->`, in: {offenders}"
+
+
 def test_ddl_never_deletes():
     """Nothing in the schema or its tooling may DELETE memory rows (CLAUDE.md §6a)."""
     ddl = (REPO_ROOT / "infra" / "ddl.sql").read_text().lower()

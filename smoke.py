@@ -190,17 +190,17 @@ def run(args: argparse.Namespace) -> int:
             f"read back: content ok, status={status}, vector_dims={dims}, cost_tokens={cost_tokens}"
         )
 
-        # 6. Semantic retrieval, and proof that the C-SPANN index actually served
-        #    it. The query carries no WHERE clause on purpose: CockroachDB only
-        #    routes through the vector index when the filter columns are part of
-        #    the index, and idx_mem_embedding is defined on (embedding) alone
-        #    (CLAUDE.md §6). Status filtering therefore has to happen after the
-        #    index lookup, or the index needs prefix columns — a Phase 1 decision
-        #    this smoke test exists to surface rather than hide.
+        # 6. Semantic retrieval exactly as the fleet performs it — filtered to
+        #    active memories — plus proof that the C-SPANN index served it.
+        #    idx_mem_embedding carries `status` as a prefix column precisely so
+        #    this filtered query uses the index; without the prefix the same
+        #    query plans as a FULL SCAN. `<=>` is cosine, matching the index
+        #    opclass and InMemoryAdapter's scoring.
         query_vec = embedder.embed("p99 read latency is spiking on the primary database shard")
         search_sql = """
-            SELECT mem_id, content, embedding <-> %s::VECTOR AS distance
+            SELECT mem_id, content, embedding <=> %s::VECTOR AS distance
             FROM memories
+            WHERE status = 'active'
             ORDER BY distance
             LIMIT 10
         """
@@ -209,11 +209,20 @@ def run(args: argparse.Namespace) -> int:
             for r in conn.execute("EXPLAIN " + search_sql, (to_vector_literal(query_vec),))
         )
         used_index = "vector search" in plan and "idx_mem_embedding" in plan
-        step(f"plan     : vector index {'USED' if used_index else 'NOT used (full scan)'}")
+        pruned = "prefix spans" in plan
+        step(
+            f"plan     : vector index {'USED' if used_index else 'NOT used (full scan)'}"
+            + (", pruned to the active partition" if pruned else "")
+        )
         if not used_index:
             raise SmokeFailure(
                 "the query planner did not use idx_mem_embedding — the vector index "
                 f"is not serving retrieval:\n{plan}"
+            )
+        if not pruned:
+            raise SmokeFailure(
+                "the vector index was used but not pruned by status — the prefix "
+                f"column is not doing its job:\n{plan}"
             )
 
         hits = conn.execute(search_sql, (to_vector_literal(query_vec),)).fetchall()
@@ -252,6 +261,18 @@ def run(args: argparse.Namespace) -> int:
         if remaining != 1:
             raise SmokeFailure("supersede did not preserve the row")
         step("supersede: row preserved with status='superseded'")
+
+        # 8b. The knowledge-update property, end to end: the superseded runbook
+        #     must disappear from retrieval *immediately*, with no reindex step.
+        #     This is the whole reason `status` is a prefix column — the entry
+        #     leaves the searched partition the moment the status changes.
+        after = conn.execute(search_sql, (to_vector_literal(query_vec),)).fetchall()
+        if target_id in [str(r[0]) for r in after]:
+            raise SmokeFailure(
+                "the superseded memory is still retrievable — knowledge-update is "
+                "not reflected in the vector index"
+            )
+        step(f"freshness: superseded memory gone from search immediately ({len(after)} hits left)")
 
         summary: dict[str, Any] = {
             "server": version.split(" (")[0],
