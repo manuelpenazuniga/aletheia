@@ -419,9 +419,13 @@ def test_fleet_not_contaminated_by_a_caught_adversary():
     reject_records = [r for r in result.audit if r.op == "reject"]
     assert reject_records and all(r.reason == "injection_pattern" for r in reject_records)
 
-    # The poisoned content never entered shared memory (reject-before-persist).
-    for mem in adapter.list_memories(status=None):
+    # Persist-then-quarantine (the immune-panel audit path, identical to ingest):
+    # the poison is retained QUARANTINED for forensics but never enters ACTIVE,
+    # retrievable memory, so it cannot contaminate the fleet.
+    for mem in adapter.list_memories(status=MemoryStatus.ACTIVE):
         assert "IGNORE PREVIOUS INSTRUCTIONS" not in mem.content
+    quarantined = adapter.list_memories(status=MemoryStatus.QUARANTINED)
+    assert any("IGNORE PREVIOUS INSTRUCTIONS" in m.content for m in quarantined)
 
     # A benign agent recalling the attack's topic never surfaces the false claim.
     hits = LocalMemoryReader(svc).recall(

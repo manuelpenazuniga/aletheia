@@ -127,6 +127,14 @@ class StorageAdapter(Protocol):
         """Release backend resources. No-op for in-memory storage."""
         ...
 
+    # The audit read: fetch a memory by id REGARDLESS of status (unlike
+    # read_recent/query_semantic, which exclude non-active memories). This is how
+    # the immune panel inspects a quarantined row and how the ingest gate checks a
+    # claimed parent's existence. Raises MemoryNotFound if absent.
+    def get_memory(self, mem_id: str) -> MemoryEvent:
+        """Fetch one memory by id, any status. Raises MemoryNotFound if absent."""
+        ...
+
     # Required by the consolidation cycle (C2) and metabolic forgetting (C3):
     # both must enumerate the fleet's memories to compute the active footprint,
     # rank prune candidates, and bucket episodes by fact key. A single shared

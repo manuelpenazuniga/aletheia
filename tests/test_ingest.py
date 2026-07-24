@@ -375,6 +375,22 @@ def test_hop_count_over_max_quarantined(make_client, config, adapter):
     assert log[0].payload.get("check") == "hops_exceeded"
 
 
+def test_hops_exceeded_with_fake_parent_is_still_audited(make_client, config, adapter):
+    """An attack that trips hops_exceeded AND carries a nonexistent parent must
+    still be persisted+logged, not dropped when write_episode hits the FK."""
+    cfg = config.with_overrides(enable_immune=True, gossip_max_hops=2)
+    client = make_client(cfg=cfg, raise_server_exceptions=False)
+    token, body = signed_body("sre-1", "far and forged", parent_mem="ghost", hop_count=9)
+    resp = client.post("/v1/memories", json=body, headers=auth_headers(token))
+    assert resp.status_code == 422
+    log = adapter.quarantine_log()
+    assert len(log) == 1  # audited, not silently dropped
+    stored = adapter.get_memory(log[0].mem_id)
+    assert stored.status is MemoryStatus.QUARANTINED
+    assert stored.parent_mem is None
+    assert log[0].payload.get("claimed_parent") == "ghost"
+
+
 def test_legitimate_write_passes_the_real_gate_and_is_retrievable(client, adapter):
     """A clean, on-topic, well-provenanced write is accepted by the default gate,
     retrievable, and leaves quarantine_log empty (no false positive)."""

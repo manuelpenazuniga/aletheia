@@ -33,9 +33,9 @@ from core.config import AletheiaConfig
 from core.embeddings import Embedder
 from core.immune import ImmuneSystem
 from core.memory import MemoryService
-from core.models import MemoryEvent, MemoryStatus
+from core.models import MemoryEvent
 from ingest.auth import Unauthorized, get_hmac_secret, require_bearer, verify
-from ingest.immune import CoreImmuneGate, ImmuneGate, ImmuneVerdict
+from ingest.immune import CoreImmuneGate, ImmuneGate, persist_quarantine
 from ingest.schemas import HealthResponse, RememberRequest, RememberResponse
 
 logger = logging.getLogger("aletheia.ingest")
@@ -161,7 +161,14 @@ def _register_routes(app: FastAPI) -> None:
                 # offending memory is written already-QUARANTINED (never
                 # retrievable, so it cannot contaminate the fleet) and a
                 # quarantine_log record is appended for the immune panel.
-                q_mem_id = _persist_quarantine(adapter, embedder, provisional, verdict)
+                q_mem_id = persist_quarantine(
+                    adapter,
+                    embedder,
+                    provisional,
+                    reason=verdict.reason or "",
+                    detector=verdict.detector or "",
+                    payload=dict(verdict.payload),
+                )
                 # Reason/detector/payload go to the structured log and
                 # quarantine_log ONLY — the HTTP body stays generic so an
                 # adversary cannot use it as an evasion oracle (mirrors the 401
@@ -209,50 +216,6 @@ def _register_routes(app: FastAPI) -> None:
             cost_tokens=stored.cost_tokens or 0,
             created_at=stored.created_at,
         )
-
-
-def _persist_quarantine(
-    adapter: StorageAdapter,
-    embedder: Embedder,
-    event: MemoryEvent,
-    verdict: ImmuneVerdict,
-) -> str:
-    """Write the rejected memory already-QUARANTINED, then log the rejection.
-
-    Auditability over deletion (the project plan §6a): the hostile/anomalous
-    content is retained for forensic review but is permanently non-retrievable
-    (status QUARANTINED is excluded from retrieval from the instant the row
-    exists), so it can never be served to another agent. Do NOT "clean up"
-    quarantined rows — they are the immune panel's evidence.
-
-    The embedding is recomputed here from content by the trusted embedder, never
-    taken from the client. When the rejection is a *nonexistent parent*, the
-    parent is stripped from the persisted copy (else ``write_episode`` would
-    re-raise :class:`MemoryNotFound` on the foreign key and the rejection could
-    not be audited) and the claimed parent is preserved in the quarantine payload.
-    """
-    payload = dict(verdict.payload)
-    parent_mem = event.parent_mem
-    if payload.get("check") == "nonexistent_parent":
-        payload.setdefault("claimed_parent", parent_mem)
-        parent_mem = None
-
-    quarantined = MemoryEvent(
-        agent_id=event.agent_id,
-        content=event.content,
-        kind=event.kind,
-        embedding=embedder.embed(event.content),
-        importance=event.importance,
-        status=MemoryStatus.QUARANTINED,
-        parent_mem=parent_mem,
-        hop_count=event.hop_count,
-        signature=event.signature,
-        meta=dict(event.meta),
-    )
-    mem_id = adapter.write_episode(event.agent_id, quarantined)
-    # reason/detector are guaranteed present on a rejection verdict.
-    adapter.quarantine(mem_id, verdict.reason or "", verdict.detector or "", payload)
-    return mem_id
 
 
 def _register_exception_handlers(app: FastAPI) -> None:

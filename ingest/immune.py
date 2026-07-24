@@ -17,8 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from core.adapter import MemoryNotFound, StorageAdapter
+from core.embeddings import Embedder
 from core.immune import ImmuneSystem
-from core.models import MemoryEvent
+from core.models import MemoryEvent, MemoryStatus
 
 
 @dataclass(frozen=True)
@@ -69,3 +71,61 @@ class CoreImmuneGate:
             detector=verdict.detector or None,
             payload=dict(verdict.payload),
         )
+
+
+def persist_quarantine(
+    adapter: StorageAdapter,
+    embedder: Embedder,
+    event: MemoryEvent,
+    *,
+    reason: str,
+    detector: str,
+    payload: dict[str, Any],
+) -> str:
+    """Write a rejected memory already-QUARANTINED, then log the rejection.
+
+    The single audit path shared by every write surface (the ingest HTTP endpoint
+    and the offline fleet writer) so a caught attack is recorded IDENTICALLY
+    wherever it enters: auditability over deletion (the project plan §6a). The
+    content is retained for the immune panel but is permanently non-retrievable
+    (QUARANTINED is excluded from retrieval from the instant the row exists).
+
+    The embedding is recomputed here by the trusted embedder, never taken from the
+    client. A claimed parent that does not exist is stripped from the persisted
+    copy (else ``write_episode`` re-raises MemoryNotFound on the FK and the
+    rejection could not be audited), with the claim preserved in the payload — for
+    EVERY rejection, not just a bad-parent one, so an attack that trips another
+    detector while also carrying a fake parent is still audited.
+
+    Returns the quarantined memory's id.
+    """
+    payload = dict(payload)
+    parent_mem = event.parent_mem
+    if parent_mem is not None and not _memory_exists(adapter, parent_mem):
+        payload.setdefault("claimed_parent", parent_mem)
+        parent_mem = None
+
+    quarantined = MemoryEvent(
+        agent_id=event.agent_id,
+        content=event.content,
+        kind=event.kind,
+        embedding=embedder.embed(event.content),
+        importance=event.importance,
+        status=MemoryStatus.QUARANTINED,
+        parent_mem=parent_mem,
+        hop_count=event.hop_count,
+        signature=event.signature,
+        meta=dict(event.meta),
+    )
+    mem_id = adapter.write_episode(event.agent_id, quarantined)
+    adapter.quarantine(mem_id, reason, detector, payload)
+    return mem_id
+
+
+def _memory_exists(adapter: StorageAdapter, mem_id: str) -> bool:
+    """True if a memory with this id exists (any status), via the audit read."""
+    try:
+        adapter.get_memory(mem_id)
+    except MemoryNotFound:
+        return False
+    return True

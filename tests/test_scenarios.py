@@ -136,6 +136,99 @@ def test_injection_cases_actually_trip_the_immune_scanner():
         assert detect_injection_pattern(case.content) is not None, case.content
 
 
+#: Domain-agnostic stop-words removed before the off-topic lexical check.
+_STOP = {
+    "the",
+    "a",
+    "an",
+    "to",
+    "of",
+    "on",
+    "in",
+    "at",
+    "and",
+    "for",
+    "after",
+    "before",
+    "with",
+    "is",
+    "was",
+    "no",
+    "it",
+    "its",
+    "this",
+    "that",
+    "we",
+}
+
+
+def _content_tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower())) - _STOP
+
+
+def test_semantic_anomaly_attacks_are_lexically_off_topic():
+    """Ground-truth check, offline and embedder-independent: every semantic_anomaly
+    attack must share NO domain vocabulary with its baseline history.
+
+    The absolute anomaly *distance* depends on the embedder — the seeded offline
+    embedder does not separate topics as sharply as Titan does at the production
+    threshold, so validating the detector's verdict offline would require a fudged
+    threshold (dishonest). What we CAN validate offline, and what the label
+    actually claims, is that the attack is off-topic: disjoint content tokens. The
+    real-detector verdict is validated against Bedrock in
+    ``test_semantic_anomaly_attacks_trip_the_real_detector_on_bedrock`` (E4)."""
+    for case in load_poison_cases(category="semantic_anomaly"):
+        attack = _content_tokens(case.content)
+        baseline = set().union(*(_content_tokens(ref) for ref in case.baseline_ref))
+        overlap = len(attack & baseline) / max(1, len(attack))
+        assert overlap == 0.0, (case.id, attack & baseline)
+
+
+def _has_aws_credentials() -> bool:
+    try:
+        import botocore.session
+
+        return botocore.session.get_session().get_credentials() is not None
+    except Exception:
+        return False
+
+
+@pytest.mark.aws
+@pytest.mark.skipif(not _has_aws_credentials(), reason="no AWS credentials — Bedrock unavailable")
+def test_semantic_anomaly_attacks_trip_the_real_detector_on_bedrock():
+    """The true ground-truth check for semantic_anomaly labels: with REAL Titan
+    embeddings and the production threshold, each attack must trip the detector.
+
+    Credential-gated (skips without AWS), like the CockroachDB integration tests.
+    Bounded to a stratified sample to keep Bedrock cost small."""
+    from adapters.bedrock_embedder import BedrockEmbedder
+    from adapters.memory_inmem import InMemoryAdapter
+    from core.config import AletheiaConfig
+    from core.immune import ImmuneSystem
+
+    dim = 1024
+    embedder = BedrockEmbedder(dim=dim)
+    config = AletheiaConfig(embedding_dim=dim)
+    cases = load_poison_cases(category="semantic_anomaly")[:8]  # cost-bounded spot-check
+
+    for case in cases:
+        adapter = InMemoryAdapter(embedding_dim=dim)
+        adapter.register_agent(case.agent_id, "sre", "hash")
+        for i, ref in enumerate(case.baseline_ref):
+            adapter.write_episode(
+                case.agent_id,
+                MemoryEvent(
+                    agent_id=case.agent_id,
+                    content=ref,
+                    embedding=embedder.embed(ref),
+                    mem_id=f"base-{i}",
+                ),
+            )
+        verdict = ImmuneSystem(adapter, embedder, config).inspect(poison_to_event(case))
+        assert not verdict.accepted, case.content
+        assert verdict.reason is QuarantineReason.SEMANTIC_ANOMALY, (case.id, verdict.reason)
+
+
 def test_load_poison_cases_filters_by_label():
     attacks = load_poison_cases(label="attack")
     legit = load_poison_cases(label="legit")

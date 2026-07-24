@@ -28,14 +28,16 @@ from typing import Any, Protocol, runtime_checkable
 from agents.signing import Signer
 from core.config import AletheiaConfig
 from core.memory import MemoryService
-from core.models import MemoryEvent, MemoryKind
+from core.models import MemoryEvent, MemoryKind, QuarantineReason
+from ingest.immune import persist_quarantine
 
 
 class PoisonRejected(Exception):
-    """Raised when the immune gate refuses a write before it is persisted.
+    """Raised when the immune gate refuses a write.
 
     Carries the forensic fields of the immune verdict so the loop can surface a
-    reject as an :class:`~agents.types.AgentStep` without any memory being written.
+    reject as an :class:`~agents.types.AgentStep`. ``mem_id`` is the id of the
+    audited (quarantined) row when the rejection was recorded, else None.
     """
 
     def __init__(
@@ -43,10 +45,12 @@ class PoisonRejected(Exception):
         reason: str | None,
         detector: str | None = None,
         payload: Mapping[str, Any] | None = None,
+        mem_id: str | None = None,
     ) -> None:
         self.reason = reason
         self.detector = detector
         self.payload: dict[str, Any] = dict(payload or {})
+        self.mem_id = mem_id
         super().__init__(f"write rejected by immune gate: {reason or 'unspecified'}")
 
 
@@ -93,16 +97,32 @@ def _verdict_reason(verdict: Any) -> str | None:
     return getattr(reason, "value", reason)
 
 
+def _is_immune_reason(reason: str | None) -> bool:
+    """True only for the three real immune quarantine reasons.
+
+    A policy/authz denial (e.g. an attempted canonical-fact rewrite) is not an
+    immune quarantine and must not be written to quarantine_log (the schema's
+    CHECK constraint forbids it).
+    """
+    try:
+        QuarantineReason(reason)
+    except ValueError:
+        return False
+    return True
+
+
 class LocalMemoryWriter:
     """In-process mirror of the ingest endpoint: sign, gate, then write.
 
     When ``config.enable_immune`` is set and a gate is present, a provisional
-    :class:`~core.models.MemoryEvent` is inspected before any write and a
-    not-allowed verdict raises :class:`PoisonRejected` — nothing is persisted, and
-    (matching the ingest endpoint's reject-before-persist for a memory that never
-    got an id) no ``quarantine_log`` row is created. With the flag off, or no gate,
-    the write goes straight through: a disabled immune system is a clean no-op
-    (the A4 ablation), which is what E4 measures.
+    :class:`~core.models.MemoryEvent` is inspected before any write; a not-allowed
+    verdict persists the offending memory already-QUARANTINED and logs it (the
+    SAME shared audit path as the ingest endpoint, so the immune panel sees a
+    caught attack identically wherever it entered), then raises
+    :class:`PoisonRejected` carrying the quarantined ``mem_id``. The content is
+    never retrievable. With the flag off, or no gate, the write goes straight
+    through: a disabled immune system is a clean no-op (the A4 ablation), which is
+    what E4 measures.
     """
 
     def __init__(
@@ -154,10 +174,28 @@ class LocalMemoryWriter:
             )
             verdict = self._gate.inspect(provisional)
             if not _verdict_allowed(verdict):
+                reason = _verdict_reason(verdict)
+                detector = getattr(verdict, "detector", None)
+                payload = dict(getattr(verdict, "payload", {}) or {})
+                # Persist-then-quarantine so a caught attack leaves the SAME audit
+                # record the ingest endpoint would (the immune panel reads
+                # quarantine_log). Same shared helper — the offline fleet and the
+                # HTTP write path cannot drift on how a rejection is recorded.
+                # ONLY genuine immune reasons are audited: a canonical-rewrite
+                # attempt is an authorization/policy denial (E4b), not an immune
+                # quarantine, and the schema's quarantine_log CHECK would reject it.
+                mem_id = None
+                if self._adapter is not None and _is_immune_reason(reason):
+                    mem_id = persist_quarantine(
+                        self._adapter,
+                        self._service._embedder,
+                        provisional,
+                        reason=reason or "",
+                        detector=detector or "",
+                        payload=payload,
+                    )
                 raise PoisonRejected(
-                    reason=_verdict_reason(verdict),
-                    detector=getattr(verdict, "detector", None),
-                    payload=dict(getattr(verdict, "payload", {}) or {}),
+                    reason=reason, detector=detector, payload=payload, mem_id=mem_id
                 )
 
         return self._service.remember(
