@@ -30,8 +30,9 @@ All of it on CockroachDB — because concurrent writes to shared memory demand
 distributed serializable transactions and vectors with no consistency gap, and
 because memory that goes down stops the entire fleet.
 
-The demo proves it with chaos engineering: we kill a node mid-consolidation with
-20 agents writing, and the fleet keeps remembering.
+The demo will prove it with chaos engineering: we kill a node mid-consolidation
+with 20 agents writing, and the fleet keeps remembering. *(The fleet, experiments
+and demo app are under construction — see the project status table below.)*
 
 ## The five core components
 
@@ -45,7 +46,9 @@ The demo proves it with chaos engineering: we kill a node mid-consolidation with
 
 ## Architecture
 
-Read path and write path are deliberately separated (least privilege):
+Read path and write path are deliberately separated (least privilege). The read
+and write services below are the Phase 1–2 deliverables; Phase 0 ships the
+portable core, the schema, and the storage contract they build on.
 
 - **Read:** agents → CockroachDB **Managed MCP Server** (service-account, read-only,
   RBAC + platform audit log). Agents never hold a database DSN.

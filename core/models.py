@@ -170,8 +170,10 @@ class MemoryHit:
 class CanonicalFact:
     """The fleet's shared source of truth for one key.
 
-    `version` increments on every knowledge-update; the version history is what
-    the demo app renders as the timeline of a belief.
+    `version` increments on every knowledge-update. This row holds only the
+    current value and its version number; the full version *timeline* the demo
+    app will render (Phase 4) is reconstructed from the audit trail — the chain
+    of superseded source memories — not stored here.
     """
 
     fact_key: str  # e.g. 'runbook:db-latency:fix'

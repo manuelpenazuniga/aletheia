@@ -39,7 +39,11 @@ around one asymmetry: **agents are unreliable, the memory must not be.**
 
 ## 2. Read path ≠ write path
 
-This separation is the security spine of the design, not a detail.
+This separation is the security spine of the design, not a detail. It is a
+**design invariant realised in Phases 1–2**: the MCP read client and the ingest
+write service are not part of the Phase 0 deliverable. Phase 0 ships the schema
+and the portable core that make the separation enforceable — notably that `core/`
+holds no DSN and the DSN lives only where the write service will.
 
 | | Read | Write |
 |---|---|---|
@@ -173,6 +177,11 @@ say so out loud**. See §11 below.
 
 3. **MCP Server availability on the Basic plan.** The read path depends on it. To
    be confirmed in the Cloud console during provisioning.
+
+4. **Serialization-error retry (Phase 1).** The production `CockroachDBAdapter`
+   must wrap writes in a retry loop on SQLSTATE `40001` — under concurrent writers
+   some serializable conflicts require an application-level retry. The smoke
+   fixture does not retry (single writer); the adapter will.
 
 ## 10. Deferred decisions (Phases 3–4)
 

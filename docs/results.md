@@ -131,6 +131,6 @@ do not appear in the tables above.
 | Superseded memory leaves search | immediately, no reindex | `smoke.py` re-queries after supersede |
 | Chaos cluster forms | 3 live nodes, `num_replicas = 3` | `chaos/verify_cluster.sh` |
 | Survives a real node kill | yes — writes + search + supersede continue | `docker kill` then `smoke.py` |
-| Unit tests | 81 passed | `pytest` |
+| Unit tests | 106 passed | `pytest` |
 | Cloud cluster | pendiente | requires provisioning |
 | Bedrock embeddings | pendiente | requires AWS model access |
