@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Aletheia — fleet memory dashboard</title>
+  <style>
+    :root {
+      --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --border: #2a3140;
+      --fg: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --good: #3fb950;
+      --warn: #d29922; --bad: #f85149; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 20px 28px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+    header h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: -0.2px; }
+    header .tag { color: var(--muted); font-size: 13px; }
+    header .spacer { flex: 1; }
+    header .health { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+    header .health.ok::before { content: "● "; color: var(--good); }
+    nav { display: flex; gap: 4px; padding: 0 28px; border-bottom: 1px solid var(--border);
+      overflow-x: auto; }
+    nav button { background: none; border: none; color: var(--muted); padding: 12px 14px;
+      font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+    nav button:hover { color: var(--fg); }
+    nav button.active { color: var(--fg); border-bottom-color: var(--accent); }
+    main { padding: 24px 28px; max-width: 1100px; }
+    section { display: none; }
+    section.active { display: block; }
+    h2 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+    .sub { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 12px; margin-bottom: 24px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px 16px; }
+    .card .n { font-size: 24px; font-weight: 650; font-family: var(--mono); }
+    .card .l { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border);
+      vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase;
+      letter-spacing: 0.4px; }
+    td.num, th.num { text-align: right; font-family: var(--mono); }
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px;
+      font-family: var(--mono); border: 1px solid var(--border); }
+    .pill.active { color: var(--good); border-color: #1a3a24; background: #0f2417; }
+    .pill.superseded { color: var(--muted); }
+    .pill.quarantined { color: var(--bad); border-color: #3a1a1a; background: #24100f; }
+    .search-row { display: flex; gap: 8px; margin-bottom: 16px; }
+    input[type=text] { flex: 1; background: var(--panel); border: 1px solid var(--border);
+      color: var(--fg); padding: 9px 12px; border-radius: 8px; font-size: 14px; }
+    button.go { background: var(--accent); color: #06101f; border: none; padding: 9px 18px;
+      border-radius: 8px; font-weight: 600; cursor: pointer; }
+    .mono { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+    .clickable { cursor: pointer; }
+    .clickable:hover td { background: var(--panel2); }
+    .timeline { border-left: 2px solid var(--border); margin-left: 8px; padding-left: 18px; }
+    .tl-item { position: relative; padding: 10px 0; }
+    .tl-item::before { content: ""; position: absolute; left: -25px; top: 15px; width: 10px;
+      height: 10px; border-radius: 50%; background: var(--muted); border: 2px solid var(--bg); }
+    .tl-item.current::before { background: var(--good); }
+    .tl-item .badge { font-size: 11px; font-family: var(--mono); }
+    .tl-item.current .badge { color: var(--good); }
+    .tl-item.superseded .badge { color: var(--muted); text-decoration: line-through; }
+    .quar { background: var(--panel); border: 1px solid #3a1a1a; border-radius: 8px;
+      padding: 12px 14px; margin-bottom: 10px; }
+    .quar .reason { color: var(--bad); font-family: var(--mono); font-size: 12px; }
+    .quar .content { margin-top: 6px; color: var(--muted); font-size: 13px; }
+    .note { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px 14px; color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+    .good { color: var(--good); } .bad { color: var(--bad); }
+    .empty { color: var(--muted); font-style: italic; padding: 20px 0; }
+    code { font-family: var(--mono); font-size: 12px; background: var(--panel2);
+      padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Aletheia</h1>
+    <span class="tag">Institutional memory for agent fleets — reliable despite unreliable agents</span>
+    <span class="spacer"></span>
+    <span class="health" id="health">connecting…</span>
+  </header>
+  <nav id="nav">
+    <button data-view="fleet" class="active">Fleet</button>
+    <button data-view="memory">Memory &amp; search</button>
+    <button data-view="canonical">Canonical facts</button>
+    <button data-view="immune">Immune feed</button>
+    <button data-view="results">Results</button>
+  </nav>
+  <main>
+    <section id="fleet" class="active">
+      <h2>Fleet</h2>
+      <p class="sub">What the fleet remembers, right now, in shared memory.</p>
+      <div class="cards" id="overview-cards"></div>
+      <h2>Agents</h2>
+      <table id="agents-table"><thead><tr>
+        <th>Agent</th><th class="num">Active</th><th class="num">Superseded</th>
+        <th class="num">Quarantined</th><th class="num">Total</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
+
+    <section id="memory">
+      <h2>Memory &amp; semantic search</h2>
+      <p class="sub">Live nearest-neighbour search over the vector memory. Click a row for its provenance chain.</p>
+      <div class="search-row">
+        <input type="text" id="q" placeholder="e.g. database latency runbook fix" />
+        <button class="go" id="search-btn">Search</button>
+      </div>
+      <div id="search-results"></div>
+      <div id="provenance-panel"></div>
+      <h2 style="margin-top:24px">Recent memories</h2>
+      <table id="mem-table"><thead><tr>
+        <th>Agent</th><th>Content</th><th>Status</th><th>Fact key</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
+
+    <section id="canonical">
+      <h2>Canonical facts — the "git of beliefs"</h2>
+      <p class="sub">The consolidation cycle supersedes obsolete runbook versions and promotes the current one. Click a fact for its version timeline.</p>
+      <table id="canon-table"><thead><tr>
+        <th>Fact key</th><th>Current content</th><th class="num">Version</th>
+      </tr></thead><tbody></tbody></table>
+      <div id="history-panel"></div>
+    </section>
+
+    <section id="immune">
+      <h2>Immune feed — quarantine log</h2>
+      <p class="sub">Poisoned writes the immune gate rejected at ingest. Quarantined, not deleted — auditable.</p>
+      <div id="quar-list"></div>
+    </section>
+
+    <section id="results">
+      <h2>Results — real numbers</h2>
+      <p class="sub">Populated only from real experiment runs (<code>docs/experiment_data/</code>). Never hand-typed.</p>
+      <div id="results-body"></div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (s, r = document) => r.querySelector(s);
+    const el = (t, c, txt) => { const e = document.createElement(t); if (c) e.className = c; if (txt != null) e.textContent = txt; return e; };
+    const esc = (s) => (s == null ? "" : String(s));
+    async function api(path, opts) {
+      const r = await fetch(path, opts);
+      if (!r.ok) throw new Error(path + " → " + r.status);
+      return r.json();
+    }
+
+    // ---- navigation ----
+    $("#nav").addEventListener("click", (e) => {
+      const btn = e.target.closest("button"); if (!btn) return;
+      document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b === btn));
+      document.querySelectorAll("section").forEach(s => s.classList.toggle("active", s.id === btn.dataset.view));
+    });
+
+    // ---- health ----
+    api("/healthz").then(h => {
+      const e = $("#health"); e.textContent = "memory layer: " + h.status; e.classList.add("ok");
+    }).catch(() => { $("#health").textContent = "offline"; });
+
+    // ---- fleet / overview ----
+    async function loadOverview() {
+      const d = await api("/api/overview");
+      const cards = $("#overview-cards"); cards.innerHTML = "";
+      const t = d.totals;
+      const spec = [
+        ["Active memories", t.active], ["Canonical facts", t.canonical_facts],
+        ["Superseded", t.superseded], ["Quarantined", t.quarantined],
+        ["Cost (tokens)", t.cost_tokens], ["Footprint MB", (t.footprint_mb || 0).toFixed(3)],
+      ];
+      for (const [l, n] of spec) {
+        const c = el("div", "card"); c.append(el("div", "n", esc(n)), el("div", "l", l)); cards.append(c);
+      }
+      const tb = $("#agents-table tbody"); tb.innerHTML = "";
+      for (const a of d.agents) {
+        const tr = el("tr");
+        tr.append(el("td", null, a.agent_id));
+        for (const k of ["active", "superseded", "quarantined", "total"]) {
+          tr.append(el("td", "num", esc(a[k] || 0)));
+        }
+        tb.append(tr);
+      }
+    }
+
+    // ---- memory list + search ----
+    async function loadMemories() {
+      const d = await api("/api/memories?limit=40");
+      const tb = $("#mem-table tbody"); tb.innerHTML = "";
+      for (const m of d.memories) {
+        const tr = el("tr", "clickable"); tr.onclick = () => loadProvenance(m.mem_id);
+        tr.append(el("td", null, m.agent_id));
+        tr.append(el("td", null, m.content));
+        const st = el("td"); st.append(pill(m.status)); tr.append(st);
+        tr.append(el("td", "mono", m.fact_key || "—"));
+        tb.append(tr);
+      }
+    }
+    function pill(status) { return el("span", "pill " + status, status); }
+
+    async function doSearch() {
+      const q = $("#q").value.trim(); if (!q) return;
+      const d = await api("/api/search", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: q, k: 8 }),
+      });
+      const box = $("#search-results"); box.innerHTML = "";
+      $("#provenance-panel").innerHTML = "";
+      if (!d.hits.length) { box.append(el("div", "empty", "No matches.")); return; }
+      const tbl = el("table");
+      tbl.innerHTML = "<thead><tr><th>Agent</th><th>Content</th><th class='num'>Score</th></tr></thead>";
+      const tb = el("tbody");
+      for (const h of d.hits) {
+        const tr = el("tr", "clickable"); tr.onclick = () => loadProvenance(h.mem_id);
+        tr.append(el("td", null, h.agent_id), el("td", null, h.content), el("td", "num", h.score.toFixed(3)));
+        tb.append(tr);
+      }
+      tbl.append(tb); box.append(tbl);
+    }
+
+    async function loadProvenance(memId) {
+      const d = await api("/api/provenance/" + encodeURIComponent(memId));
+      const p = $("#provenance-panel"); p.innerHTML = "";
+      const note = el("div", "note");
+      note.append(el("strong", null, "Provenance chain "), document.createTextNode("for " + memId));
+      p.append(note);
+      const tl = el("div", "timeline");
+      for (const link of d.chain) {
+        const it = el("div", "tl-item current");
+        const b = el("div", "badge", (link.is_root ? "root observation" : "hop " + link.hop_count) + " · " + link.agent_id);
+        it.append(b, el("div", "mono", link.mem_id));
+        tl.append(it);
+      }
+      if (!d.chain.length) tl.append(el("div", "empty", "No provenance links."));
+      p.append(tl);
+    }
+
+    // ---- canonical + history ----
+    async function loadCanonical() {
+      const d = await api("/api/canonical");
+      const tb = $("#canon-table tbody"); tb.innerHTML = "";
+      $("#history-panel").innerHTML = "";
+      if (!d.canonical_facts.length) { tb.append(rowEmpty(3, "No canonical facts yet.")); return; }
+      for (const f of d.canonical_facts) {
+        const tr = el("tr", "clickable"); tr.onclick = () => loadHistory(f.fact_key);
+        tr.append(el("td", "mono", f.fact_key), el("td", null, f.content), el("td", "num", "v" + f.version));
+        tb.append(tr);
+      }
+    }
+    async function loadHistory(factKey) {
+      const d = await api("/api/canonical/" + factKey + "/history");
+      const p = $("#history-panel"); p.innerHTML = "";
+      p.append(el("h2", null, "Version history"), el("p", "sub", factKey));
+      const tl = el("div", "timeline");
+      for (const v of d.timeline) {
+        const cur = v.status === "active";
+        const it = el("div", "tl-item " + (cur ? "current" : "superseded"));
+        it.append(el("div", "badge", (cur ? "current" : "superseded") + (v.version ? " · runbook v" + v.version : "")));
+        it.append(el("div", null, v.content));
+        tl.append(it);
+      }
+      p.append(tl);
+    }
+
+    // ---- immune ----
+    async function loadQuarantine() {
+      const d = await api("/api/quarantine");
+      const box = $("#quar-list"); box.innerHTML = "";
+      if (!d.quarantine.length) { box.append(el("div", "empty", "Nothing quarantined.")); return; }
+      for (const q of d.quarantine) {
+        const c = el("div", "quar");
+        c.append(el("div", "reason", "⚠ " + q.reason + "  ·  detector: " + q.detector));
+        if (q.content) c.append(el("div", "content", q.content));
+        box.append(c);
+      }
+    }
+
+    // ---- results ----
+    async function loadResults() {
+      const d = await api("/api/results");
+      const box = $("#results-body"); box.innerHTML = "";
+      if (!d.available) { box.append(el("div", "empty", "No experiment data committed yet.")); return; }
+      if (d.r1.length) {
+        box.append(el("h2", null, "R1 — Concurrency"));
+        const t = el("table");
+        t.innerHTML = "<thead><tr><th>Backend</th><th class='num'>N</th><th class='num'>Inconsist./1000</th><th class='num'>Reps</th></tr></thead>";
+        const tb = el("tbody");
+        for (const r of d.r1) {
+          const tr = el("tr");
+          const good = r.backend === "cockroachdb";
+          tr.append(el("td", null, r.backend === "cockroachdb" ? "CockroachDB SERIALIZABLE" : "Naive (non-transactional)"));
+          tr.append(el("td", "num", r.n ?? "—"));
+          const c = el("td", "num " + (good ? "good" : "bad"), r.inconsistencies_per_1000);
+          tr.append(c, el("td", "num", r.reps));
+          tb.append(tr);
+        }
+        t.append(tb); box.append(t);
+      }
+      if (d.r2.length) {
+        box.append(el("h2", { style: "margin-top:24px" }, "R2 — Chaos"));
+        $("#results-body h2:last-child").style.marginTop = "24px";
+        const t = el("table");
+        t.innerHTML = "<thead><tr><th>Arm</th><th>Event</th><th class='num'>Memories lost</th><th>Integrity</th><th class='num'>Recovery s</th><th>Fleet kept operating</th></tr></thead>";
+        const tb = el("tbody");
+        for (const r of d.r2) {
+          const tr = el("tr");
+          tr.append(el("td", null, r.arm), el("td", null, r.event || "—"));
+          tr.append(el("td", "num", r.memories_lost ?? "—"));
+          tr.append(el("td", r.integrity_ok ? "good" : "bad", r.integrity_ok ? "ok" : "—"));
+          tr.append(el("td", "num", r.recovery_s ?? "—"));
+          tr.append(el("td", r.fleet_kept_operating ? "good" : "bad", r.fleet_kept_operating ? "yes" : "no"));
+          tb.append(tr);
+        }
+        t.append(tb); box.append(t);
+      }
+    }
+    function rowEmpty(span, txt) { const tr = el("tr"); const td = el("td", "empty", txt); td.colSpan = span; tr.append(td); return tr; }
+
+    $("#search-btn").onclick = doSearch;
+    $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
+
+    // initial load
+    loadOverview(); loadMemories(); loadCanonical(); loadQuarantine(); loadResults();
+  </script>
+</body>
+</html>
