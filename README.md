@@ -30,9 +30,12 @@ All of it on CockroachDB — because concurrent writes to shared memory demand
 distributed serializable transactions and vectors with no consistency gap, and
 because memory that goes down stops the entire fleet.
 
-The demo will prove it with chaos engineering: we kill a node mid-consolidation
-with 20 agents writing, and the fleet keeps remembering. *(The fleet, experiments
-and demo app are under construction — see the project status table below.)*
+We prove it with chaos engineering — and the numbers are real, not a promise:
+with 20 agents writing and a consolidation cycle running, a real `docker kill` of
+a CockroachDB node lost **zero** acknowledged memories and the fleet kept writing
+through a 26 ms blip; a single-node baseline given the same storm **stopped
+entirely**. Under concurrent load, the naive store loses ~90% of writes while
+CockroachDB SERIALIZABLE loses **none**. See [Results](#results-real-numbers).
 
 ## The five core components
 
@@ -46,9 +49,7 @@ and demo app are under construction — see the project status table below.)*
 
 ## Architecture
 
-Read path and write path are deliberately separated (least privilege). The read
-and write services below are the Phase 1–2 deliverables; Phase 0 ships the
-portable core, the schema, and the storage contract they build on.
+Read path and write path are deliberately separated (least privilege):
 
 - **Read:** agents → CockroachDB **Managed MCP Server** (service-account, read-only,
   RBAC + platform audit log). Agents never hold a database DSN.
@@ -86,31 +87,55 @@ Full diagram: [`docs/architecture.md`](docs/architecture.md).
 | **Amazon S3** | Incident transcripts, experiment snapshots, archived (forgotten) memories |
 | **AWS App Runner** | The public demo app |
 
-## Results
+## Results (real numbers)
 
-Experiments are pre-registered in the project plan §8 (E1 concurrency, E2 chaos,
-E3 knowledge-update, E4 poisoning, E5 cost). Tables R1–R3 are populated **only**
-with real numbers from real runs; unrun cells say `pendiente`.
+Experiments are **pre-registered** in [`docs/results.md`](docs/results.md) with
+▲/▼ predictions declared before running. Every cell is populated **only** from a
+real run, generated from the `experiment_runs` table by
+`python -m experiments.make_tables` — never hand-typed. Unrun cells say
+`pendiente`. Raw run rows are committed under
+[`docs/experiment_data/`](docs/experiment_data/) so every number is traceable.
 
-**E3b — external validation.** The knowledge-update result is replicated on a
-stratified subset of [LongMemEval](https://github.com/xiaowu0162/LongMemEval),
-restricted to the *knowledge-update* and *temporal-reasoning* categories. The
-point is falsifiability: a recognised external benchmark shows the consolidation
-effect is not an artefact of our own synthetic corpus. The exact question IDs are
-committed in [`scenarios/longmemeval/SUBSET.md`](scenarios/longmemeval/SUBSET.md)
-so the run is reproducible.
+### R1 — Concurrency (E1) · prediction CONFIRMED
 
-**Where the chaos experiment runs — stated plainly.** CockroachDB Cloud manages
-nodes and does not expose node termination as a user operation, so E2 runs against
-a **three-node CockroachDB cluster we operate ourselves**
-([`docker-compose.chaos.yml`](docker-compose.chaos.yml)) rather than against the
-managed cluster. Nothing about the failure is simulated: three real nodes, real
-Raft replication with `num_replicas = 3`, and `docker kill` sends SIGKILL with no
-drain — a harsher event than a managed platform would ever hand us. Every other
-experiment runs against CockroachDB Cloud. We would rather explain an honest
-substitution than stage a kill.
+20 agents write shared memory under real contention; we count inconsistencies
+(lost updates, vector↔row divergence, dirty reads) and latency. 3 reps per cell.
 
-**Status: `pendiente` — experiments run in Phase 3.** See [`docs/results.md`](docs/results.md).
+| Backend | N | Inconsist./1000 wr | p95 write ms |
+|---|--:|--:|--:|
+| Naive (non-transactional) | 5 / 20 / 50 | **867 / 987 / 975** | 1–3 |
+| CockroachDB SERIALIZABLE | 5 / 20 / 50 | **0 / 0 / 0** | 13–107 |
+
+The naive store loses most writes and diverges its vectors; CockroachDB is
+inconsistency-free at a real latency cost — the correctness/latency trade-off is
+the point.
+
+### R2 — Chaos (E2) · prediction CONFIRMED
+
+Real `docker kill` (SIGKILL) of a node, mid-write, mid-consolidation. A checksum
+taken **before** the kill is verified after.
+
+| Event | Memories lost | Corruption | Recovery | Fleet kept operating |
+|---|--:|--:|--:|--:|
+| **kill node (3-node CockroachDB)** | **0** | no | **26 ms** | **yes** |
+| baseline single-node, kill | 0 \* | no | does not recover (12 s down) | **no** |
+
+\* Honest null: the single node loses **availability**, not data — its rows return
+intact on restart. Claiming "all lost" would be false. See
+[`docs/results.md`](docs/results.md) for the full tables and run provenance.
+
+### R3 / R3b — `pendiente`
+
+E3 (knowledge-update), E4 (poisoning), E5 (cost) and the external
+[LongMemEval](https://github.com/xiaowu0162/LongMemEval) validation (E3b) need
+real LLM inference (Amazon Bedrock). The harness is built and validated; those
+cells stay `pendiente` until a provisioned run fills them — no number is invented.
+
+**Where chaos runs — stated plainly.** CockroachDB Cloud does not expose node
+termination, so E2 runs against a **three-node cluster we operate ourselves**
+([`docker-compose.chaos.yml`](docker-compose.chaos.yml)): real nodes, real Raft
+replication (`num_replicas = 3`), a real SIGKILL. We would rather explain an
+honest substitution than stage a kill.
 
 ## Quickstart (local development)
 
@@ -160,28 +185,33 @@ and `supersede` preserving the row instead of deleting it.
 
 ```
 core/         portable core — never imports boto3 or psycopg (enforced by a test)
-adapters/     InMemoryAdapter (tests) + CockroachDBAdapter (psycopg + VECTOR)
-ingest/       write service (FastAPI) with the immune gate
-agents/       SRE fleet: loop, prompts, MCP client
-scenarios/    simulated incidents, distributed clues, poison suite, LongMemEval subset
-experiments/  runner, arms, seeds, scoring
-chaos/        ccloud scripts for kill-node + integrity measurement
+adapters/     InMemoryAdapter (oracle) + CockroachDBAdapter (psycopg + VECTOR) + Bedrock embedder
+ingest/       write service (FastAPI): per-agent HMAC auth + immune gate
+agents/       SRE fleet: loop, model/read/write seams, adversary, fleet runner
+scenarios/    seeded incident corpus + labelled poison suite + loader
+experiments/  runner, arms, baselines, scoring, make_tables (R1/R2/R3)
+chaos/        3-node cluster + the E2 chaos measurement harness (run_e2.py)
 lambdas/      consolidation and gossip-tick handlers
 demoapp/      FastAPI + fleet dashboard (public URL)
 infra/        provisioning scripts and infra/ddl.sql
-docs/         architecture and results
+docs/         architecture, results, experiment_data (raw run rows)
 ```
 
 ## Project status
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Foundations: repo, CI, schema, frozen core contracts, smoke test | in progress |
-| 1 | Memory core: CockroachDB adapter, consolidation, forgetting, ingest | pendiente |
-| 2 | Fleet, gossip, immune system, scenarios | pendiente |
-| 3 | Experiments E1–E6 + E3b external validation, results tables | pendiente |
-| 4 | Public demo app, incl. the ablation wall | pendiente |
+| 0 | Foundations: repo, CI, schema, frozen core contracts, smoke test | ✅ done |
+| 1 | Memory core: CockroachDB adapter, consolidation, forgetting, ingest | ✅ done |
+| 2 | Fleet, gossip, immune system, scenarios | ✅ done |
+| 3 | Experiments — **R1 & R2 real**; R3/R3b harness ready, Bedrock-gated | ◑ R1/R2 done |
+| 4 | Public demo app | ◑ in progress |
 | 5 | Packaging and submission | pendiente |
+
+380 unit tests + 16 integration tests (against a live CockroachDB) pass; `core/`
+is import-clean (no boto3/psycopg), enforced by a test. The remaining work is
+gated on provisioning CockroachDB Cloud + AWS Bedrock (R3, the live fleet, and
+the public deployment).
 
 ## License
 
