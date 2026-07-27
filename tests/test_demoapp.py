@@ -25,15 +25,24 @@ def world():
 
 
 @pytest.fixture(scope="module")
-def client(world) -> TestClient:
-    return TestClient(create_app(world.adapter, world.embedder))
+def client() -> TestClient:
+    # No injection: create_app builds the seeded offline world itself — exactly what
+    # `python -m demoapp` serves, and correctly reported as mode "offline-demo".
+    return TestClient(create_app())
 
 
 # --------------------------------------------------------------------- health
 def test_healthz(client):
     r = client.get("/healthz")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    assert r.json() == {"status": "ok", "mode": "offline-demo"}
+
+
+def test_injected_adapter_reports_live_mode(world):
+    # When a caller injects an adapter+embedder (the production wiring), the app
+    # reports mode "live" — the honest signal that data is not the seeded demo.
+    c = TestClient(create_app(world.adapter, world.embedder))
+    assert c.get("/healthz").json()["mode"] == "live"
 
 
 def test_index_served(client):
@@ -46,15 +55,21 @@ def test_index_served(client):
 # ------------------------------------------------------------------- overview
 def test_overview_has_real_fleet(client):
     d = client.get("/api/overview").json()
+    assert d["mode"] == "offline-demo"
     t = d["totals"]
     assert t["memories"] > 0
     assert t["active"] > 0
+    assert t["archived"] > 0  # forgetting ran
     assert t["canonical_facts"] > 0  # consolidation ran
     assert t["quarantined"] > 0  # immune system ran
     # More than one SRE author, so the fleet view is genuinely a fleet.
     sre_agents = [a for a in d["agents"] if a["agent_id"].startswith("sre-")]
     assert len(sre_agents) >= 2
-    assert all(a["total"] == a["active"] + a["superseded"] + a["quarantined"] for a in d["agents"])
+    # Each agent's total covers every status (incl. archived), and the per-agent
+    # totals reconcile with the fleet-wide memory count — no rows silently dropped.
+    for a in d["agents"]:
+        assert a["total"] == a["active"] + a["superseded"] + a["quarantined"] + a["archived"]
+    assert sum(a["total"] for a in d["agents"]) == t["memories"]
 
 
 # -------------------------------------------------------------------- memory
@@ -129,9 +144,26 @@ def test_results_trace_to_committed_runs(client):
     naive = [r for r in d["r1"] if r["backend"] == "naive"]
     assert crdb and all(r["inconsistencies_per_1000"] == 0 for r in crdb)
     assert naive and all(r["inconsistencies_per_1000"] > 0 for r in naive)
+    # Backend is derived from the recorded field, and N from n_agents — not guessed.
+    assert all(r["backend"] in {"naive", "cockroachdb"} for r in d["r1"])
+    assert all(isinstance(r["n"], int) for r in d["r1"])
     # R2: the kill-node arm lost zero memories.
     kill = [r for r in d["r2"] if r.get("event") == "kill_node"]
     assert kill and all(r["memories_lost"] == 0 for r in kill)
+
+
+def test_results_integrity_filters():
+    # A dry-run or non-authoritative row must never be treated as a real result,
+    # and the backend must come from the recorded field, not the arm string.
+    from demoapp.app import _authoritative, _backend_of
+
+    assert _authoritative({"metrics": {"authoritative": True, "dry_run": False}}) is True
+    assert _authoritative({"metrics": {"authoritative": True, "dry_run": True}}) is False
+    assert _authoritative({"metrics": {"authoritative": False, "dry_run": False}}) is False
+    assert _authoritative({"metrics": {}}) is False  # fail closed when unflagged
+    assert _backend_of({"backend": "crdb_serializable"}, "misleading_naive_arm") == "cockroachdb"
+    assert _backend_of({"backend": "naive_nontxn"}, "arm") == "naive"
+    assert _backend_of({}, "unlabeled") == "unknown"
 
 
 def test_default_app_builds_offline():
@@ -154,6 +186,14 @@ def test_ablation_wall_diverges(client):
     assert by["no-consolidation"]["metrics"]["canonical_facts"] < full["canonical_facts"]
     assert by["no-immune"]["metrics"]["poison_active"] > full["poison_active"]
     assert by["no-forgetting"]["metrics"]["active_cost_tokens"] > full["active_cost_tokens"]
+
+
+def test_ablation_and_killswitch_labelled_simulated(client):
+    # Both counterfactual endpoints must disclose they are seeded offline sims, so
+    # their numbers are never mistaken for live fleet state.
+    assert client.get("/api/ablation").json()["source"] == "seeded-offline"
+    ks = client.post("/api/killswitch", json={}).json()
+    assert ks["simulated"] is True and ks["source"] == "seeded-offline"
 
 
 def test_killswitch_all_on_matches_baseline(client):
@@ -180,3 +220,58 @@ def test_killswitch_disable_forgetting_grows_footprint(client):
     d = client.post("/api/killswitch", json={"enable_forgetting": False}).json()
     assert d["metrics"]["active_cost_tokens"] > d["baseline"]["active_cost_tokens"]
     assert d["metrics"]["archived"] == 0
+
+
+# ------------------------------------------------------------- determinism
+def test_demo_world_is_deterministic():
+    # The integrity policy forbids results that wander between runs. The demo world
+    # must score identically every build (strict prune order, no random tie-break).
+    from demoapp.data import build_demo_world, world_metrics
+
+    runs = [world_metrics(build_demo_world().adapter) for _ in range(5)]
+    assert all(r == runs[0] for r in runs), runs
+
+
+def test_canonical_content_is_deterministic_and_latest():
+    # A subtler integrity trap: consolidation picks the newest by (created_at,
+    # mem_id); if versions tie on created_at the random mem_id could crown a STALE
+    # version, and the demo would show an obsolete runbook as current. Deterministic
+    # version-ordered timestamps must make the true latest win, every build.
+    from collections import defaultdict
+
+    from demoapp.data import build_demo_world
+
+    contents = set()
+    for _ in range(8):
+        world = build_demo_world()
+        canon = tuple(sorted((k, v.content) for k, v in world.adapter._canonical.items()))
+        contents.add(canon)
+    assert len(contents) == 1, "canonical content must not vary between builds"
+
+    # And the surviving canonical version is the highest for its fact_key.
+    world = build_demo_world()
+    max_v: dict[str, int] = defaultdict(int)
+    active_v: dict[str, int] = {}
+    for m in world.adapter.list_memories(status=None):
+        if isinstance(m.meta, dict) and m.meta.get("fact_key"):
+            key = m.meta["fact_key"]
+            v = int(m.meta.get("runbook_version") or 0)
+            max_v[key] = max(max_v[key], v)
+            if str(m.status) == "active":
+                active_v[key] = v
+    assert active_v and all(active_v[k] == max_v[k] for k in active_v)
+
+
+# ------------------------------------------------------------- input bounds
+def test_memories_limit_is_bounded(client):
+    assert client.get("/api/memories?limit=0").status_code == 422  # ge=1
+    assert client.get("/api/memories?limit=100000").status_code == 422  # le cap
+
+
+def test_search_k_is_clamped_and_query_bounded(client):
+    # A huge k is clamped, not honoured unboundedly.
+    r = client.post("/api/search", json={"query": "latency", "k": 999999})
+    assert r.status_code == 200
+    assert len(r.json()["hits"]) <= 50
+    # An over-long query is rejected rather than embedded.
+    assert client.post("/api/search", json={"query": "x" * 10000}).status_code == 422

@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -33,6 +33,9 @@ from core.embeddings import Embedder
 _STATIC = Path(__file__).resolve().parent / "static"
 _EXPERIMENT_DATA = Path(__file__).resolve().parents[1] / "docs" / "experiment_data"
 _DEFAULT_SEARCH_K = 8
+_MAX_SEARCH_K = 50
+_MAX_QUERY_LEN = 500
+_MAX_LIST_LIMIT = 500
 _DEFAULT_BUDGET = 4000
 
 
@@ -61,17 +64,23 @@ def create_app(
     (registered) identity the read views query as — institutional memory is
     shared, so this is a caller label, not a filter.
     """
-    if adapter is None or embedder is None:
+    injected = adapter is not None and embedder is not None
+    if not injected:
         from demoapp.data import build_demo_world
 
         world = build_demo_world()
         adapter = adapter or world.adapter
         embedder = embedder or world.embedder
 
+    # The data source, surfaced on every relevant response and in the UI so
+    # seeded offline data is NEVER mistaken for a live fleet (the project plan §3.2).
+    mode = "live" if injected else "offline-demo"
+
     app = FastAPI(title="Aletheia — fleet memory dashboard", version="1.0.0")
     app.state.adapter = adapter
     app.state.embedder = embedder
     app.state.reader_agent = reader_agent
+    app.state.mode = mode
 
     _register_routes(app)
     return app
@@ -83,8 +92,8 @@ def _adapter(request: Request) -> StorageAdapter:
 
 def _register_routes(app: FastAPI) -> None:
     @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok"}
+    async def healthz(request: Request) -> dict[str, str]:
+        return {"status": "ok", "mode": request.app.state.mode}
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -96,6 +105,7 @@ def _register_routes(app: FastAPI) -> None:
         stats = adapter.stats(None)
         agents = _agent_rows(adapter)
         return {
+            "mode": request.app.state.mode,
             "totals": {
                 "memories": stats.total_memories,
                 "active": stats.active,
@@ -110,7 +120,10 @@ def _register_routes(app: FastAPI) -> None:
         }
 
     @app.get("/api/memories")
-    async def memories(request: Request, limit: int = 50) -> dict[str, Any]:
+    async def memories(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=_MAX_LIST_LIMIT),
+    ) -> dict[str, Any]:
         adapter = _adapter(request)
         rows = adapter.list_memories(status=None)[-limit:]
         rows.reverse()
@@ -120,11 +133,15 @@ def _register_routes(app: FastAPI) -> None:
     async def search(request: Request, body: SearchRequest) -> dict[str, Any]:
         adapter = _adapter(request)
         embedder = request.app.state.embedder
-        if not body.query.strip():
+        query = body.query.strip()
+        if not query:
             raise HTTPException(status_code=422, detail="query must not be empty")
-        vec = embedder.embed(body.query)
-        hits = adapter.query_semantic(request.app.state.reader_agent, vec, body.k, _DEFAULT_BUDGET)
-        return {"query": body.query, "hits": [_hit_dict(h) for h in hits]}
+        if len(query) > _MAX_QUERY_LEN:
+            raise HTTPException(status_code=422, detail=f"query exceeds {_MAX_QUERY_LEN} chars")
+        k = max(1, min(body.k, _MAX_SEARCH_K))
+        vec = embedder.embed(query)
+        hits = adapter.query_semantic(request.app.state.reader_agent, vec, k, _DEFAULT_BUDGET)
+        return {"query": query, "hits": [_hit_dict(h) for h in hits]}
 
     @app.get("/api/provenance/{mem_id}")
     async def provenance(request: Request, mem_id: str) -> dict[str, Any]:
@@ -237,8 +254,11 @@ def _register_routes(app: FastAPI) -> None:
         """Flip the four feature flags and rebuild the world for real, returning the
         recomputed metrics next to the all-on baseline. This is the interactive
         proof (§9.1.3) that each component is necessary: the judge turns one off and
-        watches stale knowledge, poison, or footprint climb. Offline only — it
-        rebuilds a seeded InMemoryAdapter world, so it never touches live memory."""
+        watches stale knowledge, poison, or footprint climb.
+
+        ALWAYS a seeded offline simulation — it rebuilds an InMemoryAdapter world
+        regardless of the injected adapter, so it never reads or mutates live fleet
+        memory. The ``simulated`` flag says so on every response; the UI labels it."""
         from demoapp.data import build_demo_world, demo_config, flags_of, world_metrics
 
         cfg = demo_config(
@@ -250,37 +270,56 @@ def _register_routes(app: FastAPI) -> None:
             )
         )
         world = build_demo_world(config=cfg)
-        baseline = build_demo_world(config=demo_config())
         return {
+            "simulated": True,
+            "source": "seeded-offline",
             "flags": flags_of(cfg),
             "metrics": world_metrics(world.adapter),
-            "baseline": world_metrics(baseline.adapter),
+            "baseline": world_metrics(_baseline_world(app).adapter),
         }
 
     @app.get("/api/ablation")
     async def ablation(request: Request) -> dict[str, Any]:
         """The ablation wall (§9.1.6): the full world and each single-component
-        ablation, same scenario, scored by the same metrics. Cached on first call
-        since the four worlds are deterministic."""
+        ablation, same scenario, scored by the same metrics. Always a seeded offline
+        simulation (never live memory). Cached on first call — the worlds are
+        deterministic."""
         cache = getattr(request.app.state, "_ablation", None)
         if cache is None:
             from demoapp.data import build_ablation_panels
 
             cache = build_ablation_panels()
             request.app.state._ablation = cache
-        return {"panels": cache}
+        return {"simulated": True, "source": "seeded-offline", "panels": cache}
+
+
+def _baseline_world(app: FastAPI):
+    """The all-on seeded world, built once and cached. Deterministic, so caching it
+    is safe and makes /api/killswitch comparisons against a single fixed baseline."""
+    cache = getattr(app.state, "_baseline", None)
+    if cache is None:
+        from demoapp.data import build_demo_world, demo_config
+
+        cache = build_demo_world(config=demo_config())
+        app.state._baseline = cache
+    return cache
 
 
 # --------------------------------------------------------------------------- #
 # Serialisation helpers (pure)
 # --------------------------------------------------------------------------- #
+_AGENT_STATUSES = ("active", "superseded", "quarantined", "archived")
+
+
 def _agent_rows(adapter: StorageAdapter) -> list[dict[str, Any]]:
     counts: dict[str, dict[str, int]] = {}
     for m in adapter.list_memories(status=None):
-        row = counts.setdefault(m.agent_id, {"active": 0, "quarantined": 0, "superseded": 0})
+        row = counts.setdefault(m.agent_id, dict.fromkeys(_AGENT_STATUSES, 0))
         status = str(m.status)
         if status in row:
             row[status] += 1
+    # total covers EVERY status (incl. archived), so agent rows reconcile with the
+    # fleet-wide total_memories — no rows silently dropped.
     return [
         {"agent_id": aid, **row, "total": sum(row.values())} for aid, row in sorted(counts.items())
     ]
@@ -316,35 +355,61 @@ def _iso(ts: Any) -> str | None:
     return ts.isoformat() if ts is not None else None
 
 
+def _authoritative(row: dict) -> bool:
+    """Only real, non-dry-run measurements count — the integrity policy (§3.1, §8.6).
+    A future dry run in the export must never be averaged in as a real result."""
+    m = row.get("metrics", {})
+    return bool(m.get("authoritative")) and not m.get("dry_run", False)
+
+
+def _backend_of(metrics: dict, arm: str) -> str:
+    """Derive the backend from the recorded field, not the arm name."""
+    backend = str(metrics.get("backend") or arm)
+    if "naive" in backend:
+        return "naive"
+    if "crdb" in backend or "cockroach" in backend:
+        return "cockroachdb"
+    return "unknown"
+
+
 def _load_results() -> dict[str, Any]:
-    """Summarise R1 (E1) and R2 (E2) from the committed experiment_runs export."""
+    """Summarise R1 (E1) and R2 (E2) from the committed experiment_runs export.
+
+    Fails closed on integrity: only rows flagged ``authoritative`` and not
+    ``dry_run`` are read; backend and N are taken from the recorded metrics fields,
+    never guessed from the arm string."""
     out: dict[str, Any] = {"r1": [], "r2": [], "available": False}
     e1 = _EXPERIMENT_DATA / "e1_experiment_runs.json"
     e2 = _EXPERIMENT_DATA / "e2_experiment_runs.json"
     if e1.exists():
-        rows = json.loads(e1.read_text())
+        rows = [r for r in json.loads(e1.read_text()) if _authoritative(r)]
         by_arm: dict[str, list[float]] = {}
+        meta: dict[str, dict] = {}
         for r in rows:
             m = r["metrics"]
             by_arm.setdefault(r["arm"], []).append(float(m["inconsistencies_per_1000"]))
+            meta.setdefault(r["arm"], m)
         for arm in sorted(by_arm):
             vals = by_arm[arm]
             out["r1"].append(
                 {
                     "arm": arm,
-                    "backend": "naive" if "naive" in arm else "cockroachdb",
-                    "n": _n_from_arm(arm),
+                    "backend": _backend_of(meta[arm], arm),
+                    "n": meta[arm].get("n_agents"),
                     "inconsistencies_per_1000": round(sum(vals) / len(vals), 1),
                     "reps": len(vals),
                 }
             )
-        out["available"] = True
+        out["available"] = out["available"] or bool(rows)
     if e2.exists():
         for r in json.loads(e2.read_text()):
+            if not _authoritative(r):
+                continue
             m = r["metrics"]
             out["r2"].append(
                 {
                     "arm": r["arm"],
+                    "backend": _backend_of(m, r["arm"]),
                     "event": m.get("event"),
                     "memories_lost": m.get("memories_lost"),
                     "integrity_ok": m.get("integrity_ok"),
@@ -353,12 +418,5 @@ def _load_results() -> dict[str, Any]:
                     "writes_acknowledged": m.get("writes_acknowledged"),
                 }
             )
-        out["available"] = True
+        out["available"] = out["available"] or bool(out["r2"])
     return out
-
-
-def _n_from_arm(arm: str) -> int | None:
-    for token in arm.split("_"):
-        if token.startswith("n") and token[1:].isdigit():
-            return int(token[1:])
-    return None

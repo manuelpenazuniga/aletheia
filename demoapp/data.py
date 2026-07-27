@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 
 from adapters.memory_inmem import InMemoryAdapter
 from core.config import AletheiaConfig
@@ -41,6 +42,12 @@ DEMO_DIM = 128  # enough lexical structure for the search view; offline + fast
 # the no-forgetting ablation prunes nothing. A documented demo tuning, not a result.
 DEMO_MEMORY_BUDGET = 250
 FLEET_OBS_IMPORTANCE = 0.2  # transient chatter: genuinely lower value than a runbook fix
+# Incident runbook versions are stamped with a deterministic created_at that strictly
+# increases with the version number, so consolidation (which picks the newest by
+# (created_at, mem_id)) ALWAYS crowns the true latest version. Without this, the
+# versions are constructed microseconds apart and can tie on created_at, letting the
+# random mem_id crown a stale version — a nondeterministic, wrong canonical fact.
+_INCIDENT_ANCHOR = datetime(2026, 1, 1, tzinfo=UTC)
 
 _POISON_META_KEY = "poison_case"  # tags a seeded attack so contamination is countable
 
@@ -58,20 +65,23 @@ ABLATION_PANELS: tuple[tuple[str, dict[str, bool], str, str], ...] = (
         "no-consolidation",
         {"enable_consolidation": False},
         "canonical_facts",
-        "No knowledge-update: canonical source-of-truth facts are never promoted (0) and "
-        "obsolete runbook versions stay retrievable.",
+        "No knowledge-update: no canonical source-of-truth facts are promoted (0) and no obsolete "
+        "runbook version is superseded. (Forgetting still runs, so some obsolete versions may be "
+        "archived for cost rather than left retrievable — the lost source of truth is the point.)",
     ),
     (
         "no-immune",
         {"enable_immune": False},
         "poison_active",
-        "No immune gate: poisoned writes are accepted and contaminate the fleet's active memory.",
+        "No immune gate: the seeded poison writes are accepted and sit in the fleet's active memory "
+        "instead of being quarantined.",
     ),
     (
         "no-forgetting",
         {"enable_forgetting": False},
         "active_cost_tokens",
-        "No metabolic forgetting: nothing is pruned, so the active token footprint grows unbounded.",
+        "No metabolic forgetting: nothing is pruned, so the full active footprint is retained "
+        "(on this scenario, the measured delta shown above vs the full run).",
     ),
 )
 
@@ -111,13 +121,19 @@ def build_demo_world(
 
     incidents = load_incidents()[:incident_count]
 
-    # 1. Write each incident's runbook v1 and its revisions as episodic memories
-    #    (same author, increasing timestamps). meta['fact_key'] ties the versions
-    #    together so the consolidation cycle can supersede the obsolete ones.
+    # 1. Write each incident's runbook v1 and its revisions as episodic memories.
+    #    meta['fact_key'] ties the versions together so consolidation can supersede
+    #    the obsolete ones. created_at is stamped deterministically, strictly
+    #    increasing with runbook_version (see _INCIDENT_ANCHOR), so the latest
+    #    version always wins consolidation — reproducibly, never by a random tie.
+    seq = 0
     for inc in incidents:
         for event in incident_to_events(inc, embedder):
             _ensure_agent(adapter, event.agent_id, "sre")
-            adapter.write_episode(event.agent_id, event)
+            version = int(event.meta.get("runbook_version") or 0)
+            created = _INCIDENT_ANCHOR + timedelta(seconds=version * 1000, microseconds=seq)
+            adapter.write_episode(event.agent_id, replace(event, created_at=created))
+            seq += 1
 
     # 2. Consolidation cycle (flag-gated inside consolidate): obsolete runbook
     #    versions are superseded (a knowledge-update), the current one promoted to

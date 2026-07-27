@@ -119,7 +119,7 @@
       <h2>Agents</h2>
       <table id="agents-table"><thead><tr>
         <th>Agent</th><th class="num">Active</th><th class="num">Superseded</th>
-        <th class="num">Quarantined</th><th class="num">Total</th>
+        <th class="num">Quarantined</th><th class="num">Archived</th><th class="num">Total</th>
       </tr></thead><tbody></tbody></table>
     </section>
 
@@ -156,6 +156,7 @@
     <section id="ablation">
       <h2>Kill-switch — is each component necessary?</h2>
       <p class="sub">Turn a component off and the world is rebuilt for real through the same core cycles. Watch stale knowledge, poison, or footprint climb.</p>
+      <div class="note" id="ks-note">Seeded offline simulation: every flip rebuilds an in-memory demo world (it never reads or mutates live fleet memory). Demo tuning: fleet chatter is written at low importance and the token budget sits just below the footprint, so metabolic forgetting prunes chatter while runbook fixes survive — a documented demonstration choice, not an experimental result.</div>
       <div class="toggles" id="toggles"></div>
       <div id="killswitch-metrics"></div>
       <h2 style="margin-top:28px">Ablation wall</h2>
@@ -187,9 +188,12 @@
       document.querySelectorAll("section").forEach(s => s.classList.toggle("active", s.id === btn.dataset.view));
     });
 
-    // ---- health ----
+    // ---- health + data-source mode ----
     api("/healthz").then(h => {
-      const e = $("#health"); e.textContent = "memory layer: " + h.status; e.classList.add("ok");
+      const e = $("#health");
+      const src = h.mode === "live" ? "live CockroachDB" : "seeded offline demo";
+      e.textContent = "data source: " + src;
+      e.classList.add("ok");
     }).catch(() => { $("#health").textContent = "offline"; });
 
     // ---- fleet / overview ----
@@ -209,7 +213,7 @@
       for (const a of d.agents) {
         const tr = el("tr");
         tr.append(el("td", null, a.agent_id));
-        for (const k of ["active", "superseded", "quarantined", "total"]) {
+        for (const k of ["active", "superseded", "quarantined", "archived", "total"]) {
           tr.append(el("td", "num", esc(a[k] || 0)));
         }
         tb.append(tr);
@@ -350,9 +354,12 @@
     function rowEmpty(span, txt) { const tr = el("tr"); const td = el("td", "empty", txt); td.colSpan = span; tr.append(td); return tr; }
 
     // ---- kill-switch + ablation ----
+    // Only the flags with a real, measurable effect on the offline world are shown
+    // as toggles. Gossip needs a live fleet (no gossip cycle runs offline), so
+    // exposing a Gossip toggle here would be a control that does nothing — omitted.
     const FLAG_LABELS = {
-      enable_consolidation: "Consolidation", enable_forgetting: "Forgetting",
-      enable_gossip: "Gossip", enable_immune: "Immune",
+      enable_consolidation: "Consolidation", enable_immune: "Immune",
+      enable_forgetting: "Forgetting",
     };
     const METRIC_LABELS = {
       canonical_facts: "canonical facts", poison_active: "poison in fleet",
