@@ -232,7 +232,7 @@ docs/         architecture, results, experiment_data (raw run rows)
 | 4 | Public demo app | ◑ in progress |
 | 5 | Packaging and submission | pendiente |
 
-380 unit tests + 16 integration tests (against a live CockroachDB) pass; `core/`
+409 unit tests + 16 integration tests (against a live CockroachDB) pass; `core/`
 is import-clean (no boto3/psycopg), enforced by a test. The remaining work is
 gated on provisioning CockroachDB Cloud + AWS Bedrock (R3, the live fleet, and
 the public deployment).

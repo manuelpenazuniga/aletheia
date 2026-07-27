@@ -1,53 +1,62 @@
 # Aletheia — architecture
 
-> Status: Phase 0 (foundations). Components marked *planned* land in Phases 1–2
-> per the project plan §10.
-
-## 1. The shape of the system
+> **Status.** The core memory layer, the read/write paths, the fleet, the five
+> components, the experiment harness and the demo app are **implemented and tested**
+> (409 unit tests + 16 integration tests against a live CockroachDB). Concurrency
+> (R1) and chaos (R2) results are **real** ([`results.md`](results.md)). What
+> remains is provisioning-gated: the live cloud deployment, R3/R3b (needs Amazon
+> Bedrock), and running E2 against CockroachDB Cloud rather than the local
+> three-node cluster. Nothing below is aspirational unless it says so.
 
 Aletheia is the shared memory layer of a fleet of agents. Everything is organised
 around one asymmetry: **agents are unreliable, the memory must not be.**
 
-```
-                        ┌───────────────────────── AWS ─────────────────────────┐
-                        │                                                        │
-  ┌───────────┐  read   │  ┌──────────────┐        ┌────────────────────────┐   │
-  │  AGENT     │─────────┼─▶│ MCP client    │───────▶│ CockroachDB Managed    │──┼──┐
-  │  FLEET     │  (MCP)  │  │ (read-only)   │        │ MCP Server (RBAC,      │  │  │
-  │  (Bedrock  │         │  └──────────────┘        │ audit log)             │  │  │
-  │   Claude)  │         │                           └────────────────────────┘  │  │
-  │            │  write  │  ┌──────────────────────────────────────────────┐    │  │
-  │            │─────────┼─▶│ INGEST SERVICE (FastAPI)                      │    │  ▼
-  └───────────┘         │  │  └─ IMMUNE GATE: provenance, anomaly,         │────┼─▶ CockroachDB Cloud
-        ▲               │  │     injection patterns -> quarantine          │    │   · memories (VECTOR + C-SPANN)
-        │ tasks          │  └──────────────────────────────────────────────┘    │   · canonical_facts
-  ┌───────────┐         │  ┌───────────────┐   ┌───────────────┐                │   · provenance
-  │ scenarios  │         │  │ Lambda:        │   │ Lambda:        │                │   · quarantine_log
-  │ (SRE       │         │  │ consolidation  │   │ gossip tick    │                │   · experiment_runs
-  │ incidents) │         │  │ (EventBridge)  │   │ (EventBridge)  │                │
-  └───────────┘         │  └───────┬───────┘   └───────┬───────┘                │
-                        │          └─────────┬─────────┘                         │
-                        │                    ▼                                   │
-                        │  ┌──────────────────────────────┐  ┌────────────────┐ │
-                        │  │ DEMO APP (App Runner)         │  │ S3: transcripts│ │
-                        │  │ fleet dashboard · kill-switch │  │ snapshots      │ │
-                        │  │ chaos · immune · ablation wall│  │ archived memory│ │
-                        │  └──────────────────────────────┘  └────────────────┘ │
-                        └───────────────────────────────────────────────────────┘
-  ccloud CLI (ops agent + chaos experiment) ──▶ CockroachDB Cloud control plane
+## 1. System architecture
+
+```mermaid
+flowchart LR
+    subgraph FLEET["Agent fleet — Amazon Bedrock (Claude)"]
+        A1["SRE agents"]
+        ADV["adversary agent"]
+    end
+    SC["scenarios/<br/>SRE incidents · poison suite"] -.tasks.-> FLEET
+
+    subgraph AWS["AWS"]
+        subgraph READ["Read path — read-only"]
+            MCPC["MCP client"]
+            MCP["CockroachDB Managed<br/>MCP Server<br/>(RBAC + audit log)"]
+        end
+        subgraph WRITE["Write path — sole DSN holder"]
+            ING["Ingest service (FastAPI)<br/>per-agent HMAC"]
+            IMM{{"IMMUNE GATE<br/>provenance · anomaly · injection"}}
+        end
+        L1["Lambda: consolidation"]
+        L2["Lambda: gossip tick"]
+        EB["EventBridge"]
+        DEMO["Demo app (App Runner)<br/>fleet · search · kill-switch<br/>immune · ablation wall"]
+        S3["S3<br/>transcripts · snapshots<br/>archived memory"]
+    end
+
+    CRDB[("CockroachDB Cloud<br/>memories · VECTOR + C-SPANN<br/>canonical_facts · provenance<br/>quarantine_log · experiment_runs")]
+    CP["ccloud CLI<br/>ops agent + chaos"]
+
+    FLEET -->|read| MCPC --> MCP --> CRDB
+    FLEET -->|"write (HTTP+HMAC)"| ING --> IMM -->|"serializable txn"| CRDB
+    IMM -.quarantine.-> CRDB
+    EB --> L1 --> CRDB
+    EB --> L2 --> CRDB
+    L1 -. archive .-> S3
+    DEMO --> CRDB
+    CP --> CRDB
 ```
 
 ## 2. Read path ≠ write path
 
-This separation is the security spine of the design, not a detail. It is a
-**design invariant realised in Phases 1–2**: the MCP read client and the ingest
-write service are not part of the Phase 0 deliverable. Phase 0 ships the schema
-and the portable core that make the separation enforceable — notably that `core/`
-holds no DSN and the DSN lives only where the write service will.
+This separation is the security spine of the design, not a detail.
 
 | | Read | Write |
 |---|---|---|
-| Entry point | CockroachDB **Managed MCP Server** | **Ingest service** (FastAPI) |
+| Entry point | CockroachDB **Managed MCP Server** | **Ingest service** (`ingest/`, FastAPI) |
 | Auth | Service-account API key, read-only | Per-agent token, HMAC-signed payloads |
 | Who holds the DSN | nobody but the ingest service | the ingest service |
 | Enforcement | RBAC + platform audit log | Immune gate before the transaction |
@@ -58,53 +67,99 @@ memory directly, but **no agent can write to the database without passing throug
 validation**. This is the concrete answer to "does the agent use the tools
 correctly and safely?".
 
+`core/` holds no DSN. It lives only in the ingest service. The boundary is
+enforced statically and at runtime by `tests/test_architecture.py`.
+
 ## 3. The five components
 
-| | Component | Flag | Phase |
-|---|---|---|---|
-| C1 | Fast write + budgeted retrieval | — | 1 |
-| C2 | Consolidation cycle (knowledge-update, canonical promotion) | `enable_consolidation` | 1 |
-| C3 | Metabolic forgetting (token budget, archive to S3) | `enable_forgetting` | 1 |
-| C4 | Gossip between agents (degradation by hop) | `enable_gossip` | 2 |
-| C5 | Immune system (provenance, anomaly, injection → quarantine) | `enable_immune` | 2 |
+All five are **implemented and behind their feature flag** in `AletheiaConfig`.
+The experimental ablations and the demo kill-switch are the same four booleans.
 
-Every component is behind its flag from its first commit. The experimental
-ablations and the demo kill-switch are the same four booleans.
+| | Component | Module | Flag |
+|---|---|---|---|
+| C1 | Fast write + budgeted retrieval | `core/memory.py` | — |
+| C2 | Consolidation cycle (knowledge-update, canonical promotion) | `core/consolidation.py` | `enable_consolidation` |
+| C3 | Metabolic forgetting (token budget, archive to S3) | `core/forgetting.py` | `enable_forgetting` |
+| C4 | Gossip between agents (degradation by hop) | `core/gossip.py` | `enable_gossip` |
+| C5 | Immune system (provenance, anomaly, injection → quarantine) | `core/immune.py` | `enable_immune` |
 
 ## 4. Life of a memory
 
-1. An agent resolves a step of an incident and produces a `MemoryEvent`: content,
-   embedding, and provenance signed with its token.
-2. `POST` to the ingest service → **immune gate**: valid provenance? semantic
-   anomaly against the agent's own history? injection pattern? → pass, or
-   `quarantine`.
-3. One serializable transaction writes the row in `memories` (embedding included)
-   and the link in `provenance`. There is no window in which a vector exists
-   without its operational row — that is the CockroachDB argument in one line.
-4. Other agents find it through semantic retrieval over the MCP server, or
-   receive it through a gossip tick.
-5. The consolidation cycle detects that a fact was revised → `supersede(old, new)`
-   → `canonical_facts` is bumped. The logical removal is reflected in the vector
-   index immediately (C-SPANN freshness).
-6. Metabolic forgetting moves low-value memory out of the budget: archived to S3,
-   status `archived`, never destroyed.
+```mermaid
+sequenceDiagram
+    participant A as Agent (Bedrock)
+    participant I as Ingest + immune gate
+    participant DB as CockroachDB
+    participant L as Consolidation (Lambda)
+    participant O as Other agents
+    participant S as S3
+
+    A->>I: POST MemoryEvent (content, embedding, signed provenance)
+    Note over I: provenance? anomaly? injection?
+    alt rejected
+        I->>DB: quarantine (status=quarantined, logged)
+    else accepted
+        I->>DB: one serializable txn: memories row + embedding + provenance link
+    end
+    O->>DB: semantic retrieval (MCP, budgeted) / gossip tick
+    DB-->>O: fresh hits (C-SPANN)
+    L->>DB: detect revised fact → supersede(old,new), bump canonical_facts
+    Note over DB: superseded row leaves search immediately
+    L->>S: forgetting: archive low-value memory (status=archived)
+```
+
+The single serializable transaction in step *accepted* is the CockroachDB argument
+in one line: **there is no window in which a vector exists without its operational
+row**. The logical removal in `supersede` is reflected in the vector index
+immediately — the C-SPANN freshness property, asserted in `smoke.py`.
 
 ## 5. Portability boundary
 
-`core/` contains the memory logic and imports no infrastructure — no `boto3`, no
-`psycopg`, no web framework. Storage enters through `core.adapter.StorageAdapter`;
-embeddings through `core.embeddings.Embedder`; the S3 offload through an injected
-callback. `tests/test_architecture.py` enforces this statically and at runtime.
+`core/` contains the memory logic and imports no infrastructure. Storage enters
+through `core.adapter.StorageAdapter`; embeddings through `core.embeddings.Embedder`;
+the S3 offload through an injected callback.
 
-```
-core/  ──(Protocol)──▶  adapters/memory_inmem.py   (tests, reference oracle)
-       ──(Protocol)──▶  adapters/cockroach.py      (production; Phase 1)
-       ──(Protocol)──▶  core.embeddings.Embedder
-                            ├── DeterministicEmbedder (offline, seeded)
-                            └── adapters/bedrock_embedder.py (Titan V2)
+```mermaid
+flowchart LR
+    CORE["core/<br/>memory logic<br/>(no boto3, no psycopg,<br/>no web framework)"]
+    SA["StorageAdapter<br/>(Protocol)"]
+    EMB["Embedder<br/>(Protocol)"]
+    INMEM["InMemoryAdapter<br/>reference oracle · tests"]
+    CRDB["CockroachDBAdapter<br/>psycopg + VECTOR"]
+    DET["DeterministicEmbedder<br/>offline, seeded"]
+    TITAN["BedrockEmbedder<br/>Titan v2"]
+
+    CORE --> SA
+    CORE --> EMB
+    SA --> INMEM
+    SA --> CRDB
+    EMB --> DET
+    EMB --> TITAN
 ```
 
-## 6. Schema
+The same demo app `create_app(adapter, embedder)` serves the seeded offline world
+or a live CockroachDB + Bedrock one with no code change — the seam is the adapter.
+
+## 6. The tools, and what the agent does with each
+
+The hackathon asks which CockroachDB tools were used and **what the agent did with
+them**. All four are used for real:
+
+| CockroachDB tool | What the agent does with it |
+|---|---|
+| **Managed MCP Server** | The fleet's read path: semantic + relational memory queries under a read-only service account (`agents/read_client.py`) |
+| **Distributed Vector Indexing (C-SPANN)** | Semantic memory: `VECTOR(1024)` embeddings indexed for retrieval, fresh immediately after insert/supersede (`adapters/cockroach.py`) |
+| **ccloud CLI (agent-ready)** | Provisioning, backups, and the E2 chaos experiment — killing a node under load (`chaos/`) |
+| **Agent Skills repo** | Operational skills mounted on the ops agent for cluster diagnosis via SQL |
+
+| AWS service | Role |
+|---|---|
+| **Amazon Bedrock** | Fleet models (Claude) + Titan embeddings (`adapters/bedrock_embedder.py`) |
+| **AWS Lambda + EventBridge** | Consolidation cycle and gossip ticks on a schedule (`lambdas/`) |
+| **Amazon S3** | Incident transcripts, experiment snapshots, archived (forgotten) memories |
+| **AWS App Runner** | The public demo app (`Dockerfile`, `infra/deploy_demoapp.sh`) |
+
+## 7. Schema
 
 See [`infra/ddl.sql`](../infra/ddl.sql). Two invariants the schema encodes:
 
@@ -113,26 +168,32 @@ See [`infra/ddl.sql`](../infra/ddl.sql). Two invariants the schema encodes:
 * **Multi-table writes are atomic.** `memories` and `provenance` are always
   written in the same transaction.
 
-## 7. Verified in Phase 0
+## 8. What is verified, and how
 
-Against `cockroachdb/cockroach:v25.4.13` (local single node):
+Against `cockroachdb/cockroach:v25.4.13`:
 
-* Full schema applies, including `CREATE VECTOR INDEX idx_mem_embedding`.
-* Default transaction isolation is `serializable`.
+* Full schema applies, including `CREATE VECTOR INDEX idx_mem_embedding`, and the
+  default transaction isolation is `serializable` (`smoke.py --local`).
 * 1024-dimension vectors round-trip through the `VECTOR` column.
 * `EXPLAIN` confirms the vector index serves the **filtered** retrieval the fleet
   actually issues, pruned to the active partition:
   `• vector search  table: memories@idx_mem_embedding  prefix spans: [/'active' - /'active']`.
-* A superseded memory leaves the search results **immediately**, with no reindex
-  step — the C-SPANN freshness property, asserted in `smoke.py`.
-* On the three-node chaos cluster: `docker kill` of one node (SIGKILL, no drain)
-  leaves the node reported `is_live = false`, and writes, vector search and
-  supersede all keep working through the surviving two. Smoke-level only — the
-  measured version is E2 in Phase 3.
+* A superseded memory leaves the search results **immediately**, with no reindex.
+* **R1 (concurrency), real:** under 20 concurrent writers the naive non-transactional
+  baseline loses ~90% of writes and diverges its vectors; CockroachDB `SERIALIZABLE`
+  is inconsistency-free. **R2 (chaos), real:** a `docker kill` of a node mid-write,
+  mid-consolidation lost **zero** acknowledged memories, corrupted nothing (checksum
+  verified), and the fleet kept writing through a 26 ms blip. See [`results.md`](results.md).
+* The demo image builds and runs standalone: `/healthz`, live search, provenance,
+  the kill-switch/ablation wall and a real launch-an-attack immune panel all serve.
 
-## 8. Resolved decisions
+Provisioning-gated (harness ready, not yet run against cloud): E3 knowledge-update,
+E4 poisoning, E5 cost, E3b LongMemEval (these populate table R3); the public App
+Runner URL; E2 against CockroachDB Cloud's Disruption API rather than the local cluster.
 
-### 8.1 Filtered vector search — prefix columns *(decided 2026-07-24)*
+## 9. Resolved decisions
+
+### 9.1 Filtered vector search — prefix columns *(decided 2026-07-24)*
 
 CockroachDB routes a query through the vector index only when the query's filters
 are covered by the index. Retrieval must exclude superseded, quarantined and
@@ -145,68 +206,42 @@ CREATE VECTOR INDEX idx_mem_embedding ON memories (status, embedding vector_cosi
 Measured against v25.4.13: with the index on `(embedding)` alone, `WHERE status =
 'active' ORDER BY embedding <=> $1 LIMIT k` plans as a **full scan**; with the
 prefix it plans as `vector search … prefix spans: [/'active' - /'active']` — the
-index is used *and* only the active partition is searched. The alternative
-considered and rejected was over-fetching unfiltered and post-filtering, which has
-no lower bound on how many results survive the filter.
+index is used *and* only the active partition is searched.
 
-Decided during Phase 0, while `ddl.sql` was still editable under §6 rule (c); any
-later change goes to `infra/migrations/`.
+### 9.2 Distance operator — cosine, by contract *(decided 2026-07-24)*
 
-### 8.2 Distance operator — cosine, by contract *(decided 2026-07-24)*
+`vector_cosine_ops` on the index, `<=>` in every query. `InMemoryAdapter` scores
+with cosine too, so the two adapters agree **by contract** rather than by the
+coincidence that L2 and cosine rank unit-length vectors identically.
 
-`vector_cosine_ops` on the index, `<=>` in every query. `InMemoryAdapter` already
-scores with cosine, so the two adapters now agree **by contract** rather than by
-the coincidence that L2 and cosine rank unit-length vectors identically.
+### 9.3 Serialization-error retry *(implemented, Phase 1)*
 
-### 8.3 Where the chaos experiment runs *(decided 2026-07-24)*
+The production `CockroachDBAdapter` wraps writes in a retry loop on SQLSTATE
+`40001`: under concurrent writers some serializable conflicts require an
+application-level retry. This is what makes R1's "0 inconsistencies" hold without
+lost work.
 
-CockroachDB Cloud manages nodes and does not expose node termination, so E2 runs
-against a self-operated three-node cluster (`docker-compose.chaos.yml`) where a
-kill is genuine. Authorised by the project plan §11, with its condition: **the video must
-say so out loud**. See §11 below.
+### 9.4 Where the chaos experiment runs *(decided 2026-07-24)* — see §11.
 
-## 9. Still open
+## 10. Provisioning-gated items
 
-1. **Bedrock model ids.** `core/config.py` carries best-guess defaults; the exact
-   ids and their availability in the target region must be confirmed in the
-   Bedrock console before any experimental run (the project plan §11).
+Recorded so they are not rediscovered late.
 
-2. **Cluster version alignment.** Local development pins
-   `CRDB_IMAGE_TAG=v25.4.13`; align it with whatever version CockroachDB Cloud
-   provisions on the Basic plan.
-
-3. **MCP Server availability on the Basic plan.** The read path depends on it. To
-   be confirmed in the Cloud console during provisioning.
-
-4. **Serialization-error retry (Phase 1).** The production `CockroachDBAdapter`
-   must wrap writes in a retry loop on SQLSTATE `40001` — under concurrent writers
-   some serializable conflicts require an application-level retry. The smoke
-   fixture does not retry (single writer); the adapter will.
-
-## 10. Deferred decisions (Phases 3–4)
-
-Recorded here so they are not rediscovered late. Neither is implemented yet.
-
-1. **E3b — external validation on LongMemEval** (the project plan §8.1, §8.4). The
-   knowledge-update arms (`A0_full`, `A1_no_consolidation`, `BL_rag`) are replayed
-   on a stratified subset of the public LongMemEval benchmark, restricted to the
-   *knowledge-update* and *temporal-reasoning* categories — the full benchmark is
-   out of budget. Two artefacts are required and currently exist as placeholders:
-   `scenarios/longmemeval/SUBSET.md` (the exact question IDs, for reproducibility)
-   and `experiments/scoring_lme.py` (the scoring adapter). Open question for
-   Phase 3: how the benchmark's conversational sessions map onto `MemoryEvent`
-   provenance, since LongMemEval has no notion of which agent observed what.
-
-2. **Ablation wall — live fleets or synchronised replays** (the project plan §9.1.6,
-   §10 Phase 4). A four-panel grid — `full`, `−consolidation`, `−immune`,
-   `−forgetting` — running the same scenario under the same seed and diverging
-   under the same events. Four live fleets is the stronger demonstration; four
-   synchronised replays of real recorded runs is the cheaper one. The decision is
-   deferred to Phase 4 and must be taken on the token cost actually measured in
-   Phase 3, then **documented in the README and stated in the video** — a replay
-   presented as a live fleet would be exactly the kind of disguised mock
-   the project plan §3.2 forbids. Either way the wall reads the four ablations from the
-   same feature flags in `AletheiaConfig`; no new configuration surface.
+1. **Bedrock model ids / region.** `core/config.py` carries defaults; the exact ids
+   and their availability in the target region are confirmed in the Bedrock console
+   before any experimental run.
+2. **MCP Server availability on the plan.** The read path depends on it; confirmed
+   in the Cloud console during provisioning.
+3. **E3b — external validation on LongMemEval** (project plan §8.1, §8.4). The
+   knowledge-update arms are replayed on a stratified subset of the public benchmark
+   (knowledge-update + temporal-reasoning categories only). Artefacts:
+   `scenarios/longmemeval/SUBSET.md` and `experiments/scoring_lme.py`.
+4. **Ablation wall — live fleets or synchronised replays** (project plan §9.1.6).
+   The demo already serves the four-panel wall from the same feature flags; the only
+   open call is whether the video shows four live fleets or synchronised replays of
+   real runs — to be decided on measured cost and **stated in the video**, since a
+   replay presented as a live fleet is exactly the disguised mock the project plan
+   §3.2 forbids.
 
 ## 11. The chaos cluster (E2)
 
@@ -217,23 +252,18 @@ operate ourselves — `docker-compose.chaos.yml`, three real nodes, real Raft
 replication, `num_replicas = 3` so quorum survives losing one.
 
 **Nothing about the failure is simulated.** `docker kill` sends SIGKILL: no drain,
-no graceful shutdown, the node simply stops. That is a harsher event than a
-managed platform would ever give us.
+no graceful shutdown, the node simply stops — a harsher event than a managed
+platform would ever give us.
 
 ```bash
 docker compose -f docker-compose.chaos.yml up -d
 ./chaos/verify_cluster.sh                     # assert 3 live nodes before claiming anything
 docker kill aletheia-chaos-2                  # the real event
+python -m chaos.run_e2                         # measured: loss, integrity, recovery → R2
 ```
 
-Verified at smoke level on 2026-07-24: with node 2 killed and reported
-`is_live = false`, writes, vector search, supersede and provenance all continued
-to work through the surviving two nodes. The measured version — writes in flight,
-memories lost, integrity checksums taken before the event and verified after,
-recovery time — is E2 in Phase 3, and populates table R2.
-
-**The condition attached to this choice is not optional** (the project plan §11): the
-video and the README must state plainly that the kill happens on a self-operated
+**The condition attached to this choice is not optional** (project plan §11): the
+video and the README state plainly that the kill happens on a self-operated
 three-node cluster, and why. A viewer must never be left to assume it was the
 managed cluster. Faking a kill would be disqualifying; explaining an honest
 substitution costs nothing and, with this jury, is worth more than the illusion.
