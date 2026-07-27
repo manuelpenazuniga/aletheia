@@ -222,6 +222,51 @@ def test_killswitch_disable_forgetting_grows_footprint(client):
     assert d["metrics"]["archived"] == 0
 
 
+# ----------------------------------------------------------- launch attack
+def test_attack_categories_offered(client):
+    d = client.get("/api/attack/categories").json()
+    # Only the offline-reliable families are offered; semantic_anomaly is excluded.
+    assert d["categories"] == ["injection_pattern", "bad_provenance"]
+    assert d["token_required"] is False  # no ALETHEIA_DEMO_TOKEN set in tests
+
+
+def test_attack_is_caught_and_hits_the_feed(client):
+    before = len(client.get("/api/quarantine").json()["quarantine"])
+    r = client.post("/api/attack", json={"category": "injection_pattern"})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["detected"] is True
+    assert d["detector"] and d["reason"]
+    assert d["quarantined_mem_id"]
+    # The caught attack really lands in the quarantine feed (not staged).
+    after = client.get("/api/quarantine").json()["quarantine"]
+    assert len(after) == before + 1
+    assert any(q["mem_id"] == d["quarantined_mem_id"] for q in after)
+
+
+def test_attack_bad_provenance_also_caught(client):
+    d = client.post("/api/attack", json={"category": "bad_provenance"}).json()
+    assert d["detected"] is True
+
+
+def test_attack_rejects_unknown_category(client):
+    assert client.post("/api/attack", json={"category": "nope"}).status_code == 422
+
+
+def test_attack_token_gate(world, monkeypatch):
+    # With a demo token configured, an attack without the right token is refused.
+    monkeypatch.setenv("ALETHEIA_DEMO_TOKEN", "s3cr3t")
+    c = TestClient(create_app(world.adapter, world.embedder))
+    assert c.get("/api/attack/categories").json()["token_required"] is True
+    assert c.post("/api/attack", json={"category": "injection_pattern"}).status_code == 403
+    assert (
+        c.post("/api/attack", json={"category": "injection_pattern", "token": "wrong"}).status_code
+        == 403
+    )
+    ok = c.post("/api/attack", json={"category": "injection_pattern", "token": "s3cr3t"})
+    assert ok.status_code == 200 and ok.json()["detected"] is True
+
+
 # ------------------------------------------------------------- determinism
 def test_demo_world_is_deterministic():
     # The integrity policy forbids results that wander between runs. The demo world

@@ -64,6 +64,15 @@
     .tl-item .badge { font-size: 11px; font-family: var(--mono); }
     .tl-item.current .badge { color: var(--good); }
     .tl-item.superseded .badge { color: var(--muted); text-decoration: line-through; }
+    .attack-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      margin-bottom: 14px; color: var(--muted); font-size: 13px; }
+    .attack-bar select, .attack-bar input { background: var(--panel);
+      border: 1px solid var(--border); color: var(--fg); padding: 8px 10px; border-radius: 8px;
+      font-size: 13px; }
+    .verdict { border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; font-size: 13px;
+      border: 1px solid var(--border); }
+    .verdict.caught { border-color: #1a3a24; background: #0f2417; color: var(--good); }
+    .verdict.missed { border-color: #3a2a1a; background: #241c0f; color: var(--warn); }
     .quar { background: var(--panel); border: 1px solid #3a1a1a; border-radius: 8px;
       padding: 12px 14px; margin-bottom: 10px; }
     .quar .reason { color: var(--bad); font-family: var(--mono); font-size: 12px; }
@@ -150,6 +159,13 @@
     <section id="immune">
       <h2>Immune feed — quarantine log</h2>
       <p class="sub">Poisoned writes the immune gate rejected at ingest. Quarantined, not deleted — auditable.</p>
+      <div class="attack-bar">
+        <span>Launch attack:</span>
+        <select id="attack-cat"></select>
+        <input type="text" id="attack-token" placeholder="demo token" style="display:none" />
+        <button class="go" id="attack-btn">Release adversary</button>
+      </div>
+      <div id="attack-result"></div>
       <div id="quar-list"></div>
     </section>
 
@@ -299,7 +315,43 @@
       p.append(tl);
     }
 
-    // ---- immune ----
+    // ---- immune: quarantine feed + launch attack ----
+    async function loadAttackCategories() {
+      const d = await api("/api/attack/categories");
+      const sel = $("#attack-cat"); sel.innerHTML = "";
+      for (const c of d.categories) {
+        const o = document.createElement("option"); o.value = c; o.textContent = c; sel.append(o);
+      }
+      $("#attack-token").style.display = d.token_required ? "" : "none";
+    }
+    async function launchAttack() {
+      const btn = $("#attack-btn"); btn.disabled = true;
+      try {
+        const body = { category: $("#attack-cat").value };
+        const tok = $("#attack-token").value.trim();
+        if (tok) body.token = tok;
+        const r = await fetch("/api/attack", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+        });
+        const box = $("#attack-result"); box.innerHTML = "";
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({ detail: r.status }));
+          box.append(el("div", "verdict missed", "Attack blocked by demo guard: " + (e.detail || r.status)));
+          return;
+        }
+        const d = await r.json();
+        const v = el("div", "verdict " + (d.detected ? "caught" : "missed"));
+        const head = d.detected
+          ? "⛔ Quarantined by the immune gate — detector: " + d.detector + " (" + d.reason + ")"
+          : "⚠ Not caught by this detector — written to active memory";
+        v.append(el("strong", null, head));
+        v.append(el("div", "mono", "attack " + d.attack.case_id + " from " + d.attack.agent_id));
+        v.append(el("div", null, d.attack.content));
+        box.append(v);
+        await loadQuarantine();  // the new quarantine row appears in the feed, live
+      } finally { btn.disabled = false; }
+    }
+
     async function loadQuarantine() {
       const d = await api("/api/quarantine");
       const box = $("#quar-list"); box.innerHTML = "";
@@ -430,9 +482,11 @@
 
     $("#search-btn").onclick = doSearch;
     $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
+    $("#attack-btn").onclick = launchAttack;
 
     // initial load
-    loadOverview(); loadMemories(); loadCanonical(); loadQuarantine(); loadResults(); loadAblation();
+    loadOverview(); loadMemories(); loadCanonical(); loadQuarantine(); loadResults();
+    loadAblation(); loadAttackCategories();
   </script>
 </body>
 </html>

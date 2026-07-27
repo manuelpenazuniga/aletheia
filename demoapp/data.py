@@ -24,8 +24,10 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from adapters.memory_inmem import InMemoryAdapter
+from core.adapter import MemoryNotFound
 from core.config import AletheiaConfig
 from core.consolidation import consolidate
 from core.embeddings import DeterministicEmbedder, Embedder
@@ -33,7 +35,12 @@ from core.forgetting import run_forgetting
 from core.immune import ImmuneSystem
 from core.models import MemoryEvent, MemoryKind, MemoryStatus
 from ingest.immune import persist_quarantine
-from scenarios.loader import incident_to_events, load_incidents, load_poison_cases
+from scenarios.loader import (
+    incident_to_events,
+    load_incidents,
+    load_poison_cases,
+    poison_to_event,
+)
 
 DEMO_DIM = 128  # enough lexical structure for the search view; offline + fast
 # The active footprint (~291 tokens) sits above this budget so that, WITH
@@ -49,7 +56,7 @@ FLEET_OBS_IMPORTANCE = 0.2  # transient chatter: genuinely lower value than a ru
 # random mem_id crown a stale version — a nondeterministic, wrong canonical fact.
 _INCIDENT_ANCHOR = datetime(2026, 1, 1, tzinfo=UTC)
 
-_POISON_META_KEY = "poison_case"  # tags a seeded attack so contamination is countable
+_POISON_META_KEY = "poison_id"  # poison_to_event tags every attack with this; countable
 
 # The four panels of the ablation wall (§9.1.6): full, and each single component
 # removed. Each names the target metric that panel is meant to move and a plain
@@ -175,29 +182,7 @@ def build_demo_world(
     #    and contaminates the fleet — exactly the no-immune ablation.
     immune = ImmuneSystem(adapter, embedder, config)
     for case in load_poison_cases(category="injection_pattern")[:poison_count]:
-        _ensure_agent(adapter, case.agent_id, "adversary")
-        event = MemoryEvent(
-            agent_id=case.agent_id,
-            content=case.content,
-            kind=MemoryKind.EPISODIC,
-            signature=case.provenance.signature or "unsigned",
-            meta={_POISON_META_KEY: case.id},
-        )
-        verdict = immune.inspect(event)
-        if verdict.accepted:
-            adapter.write_episode(
-                event.agent_id,
-                replace(event, embedding=embedder.embed(event.content)),
-            )
-        else:
-            persist_quarantine(
-                adapter,
-                embedder,
-                event,
-                reason=(verdict.reason.value if verdict.reason else ""),
-                detector=verdict.detector or "",
-                payload=dict(verdict.payload),
-            )
+        _ingest_poison_case(adapter, embedder, immune, case)
 
     # 5. Metabolic forgetting (flag-gated inside run_forgetting): prune the fewest
     #    lowest-value active memories to fit the budget. With enable_forgetting=False
@@ -205,6 +190,95 @@ def build_demo_world(
     run_forgetting(adapter, config)
 
     return DemoWorld(adapter=adapter, embedder=embedder, config=config)
+
+
+def _ingest_poison_case(adapter, embedder, immune, case) -> tuple[Any, str | None]:
+    """Run one poison case through the real immune gate and persist the outcome.
+
+    The single write path shared by the seed loop and the live "launch attack"
+    button: build the attack event WITH its full attack data intact (bad provenance,
+    over-propagated hops, missing signature — via ``poison_to_event``), inspect →
+    if rejected, persist QUARANTINED (non-retrievable, logged), else write ACTIVE
+    (only when the immune flag is off, or the attack slipped past). Returns the
+    verdict and the quarantined memory id (or None). One function means a launched
+    attack is handled BYTE-IDENTICALLY to a seeded one — the feed is real.
+    """
+    _ensure_agent(adapter, case.agent_id, "adversary")
+    event = poison_to_event(case, embedder)
+    verdict = immune.inspect(event)
+    if not verdict.accepted:
+        quar_id = persist_quarantine(
+            adapter,
+            embedder,
+            event,
+            reason=(verdict.reason.value if verdict.reason else ""),
+            detector=verdict.detector or "",
+            payload=dict(verdict.payload),
+        )
+        return verdict, quar_id
+    # Accepted (immune off, or the attack was not caught): write it ACTIVE so it
+    # contaminates the fleet — the point of the no-immune ablation. Strip a claimed
+    # parent that does not exist, else a bad-provenance payload's dangling FK would
+    # crash the write instead of demonstrating contamination.
+    if event.parent_mem is not None and not _memory_exists(adapter, event.parent_mem):
+        event = replace(event, parent_mem=None)
+    adapter.write_episode(event.agent_id, event)
+    return verdict, None
+
+
+def _memory_exists(adapter: InMemoryAdapter, mem_id: str) -> bool:
+    try:
+        adapter.get_memory(mem_id)
+    except MemoryNotFound:
+        return False
+    return True
+
+
+def launch_attack(
+    adapter: InMemoryAdapter,
+    embedder: Embedder,
+    config: AletheiaConfig,
+    *,
+    category: str = "injection_pattern",
+    index: int = 0,
+) -> dict[str, Any]:
+    """Release the adversary: run one committed poison case through the live immune
+    gate against ``adapter`` and report what happened (§9.1.5).
+
+    Real, not staged: it calls the same :class:`ImmuneSystem` and quarantine path
+    the fleet uses, so a caught attack lands in the quarantine feed exactly as a
+    production interception would. ``index`` cycles through the category's cases so
+    repeated clicks show different attacks.
+    """
+    cases = load_poison_cases(category=category)
+    if not cases:
+        raise ValueError(f"no poison cases for category {category!r}")
+    case = cases[index % len(cases)]
+    immune = ImmuneSystem(adapter, embedder, config)
+    verdict, quar_id = _ingest_poison_case(adapter, embedder, immune, case)
+    return {
+        "attack": {
+            "case_id": case.id,
+            "category": category,
+            "agent_id": case.agent_id,
+            "content": case.content,
+        },
+        "detected": not verdict.accepted,
+        "reason": verdict.reason.value if verdict.reason else None,
+        "detector": verdict.detector,
+        "quarantined_mem_id": quar_id,
+    }
+
+
+def poison_categories() -> list[str]:
+    """Attack families the launch-attack button offers, in a stable order.
+
+    Only families the gate reliably catches OFFLINE are exposed. ``semantic_anomaly``
+    is deliberately excluded: that detector measures a write's distance from the
+    author's OWN history, and the offline adversary has no benign history to deviate
+    from — so it fires only ~2/8 offline. Exposing it would misrepresent the immune
+    system as weak; it is exercised properly in the E4 experiment, not this button."""
+    return ["injection_pattern", "bad_provenance"]
 
 
 def world_metrics(adapter: InMemoryAdapter) -> dict[str, int]:

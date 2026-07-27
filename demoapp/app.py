@@ -19,6 +19,7 @@ built lazily so importing the module pulls no scenario data.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -51,19 +52,34 @@ class KillSwitchRequest(BaseModel):
     enable_immune: bool = True
 
 
+class AttackRequest(BaseModel):
+    category: str = "injection_pattern"
+    token: str | None = None
+
+
+_DEMO_TOKEN_ENV = "ALETHEIA_DEMO_TOKEN"
+# Cap on attack-generated quarantine rows per process, so a public "launch attack"
+# button cannot grow memory without bound (the project plan §9.1 security note).
+_MAX_LAUNCHED_ATTACKS = 100
+
+
 def create_app(
     adapter: StorageAdapter | None = None,
     embedder: Embedder | None = None,
     *,
     reader_agent: str = "sre-01",
+    config: Any = None,
 ) -> FastAPI:
     """Build the dashboard over an injected memory layer.
 
     With no arguments it builds the offline demo world; pass a CockroachDBAdapter
     + a Bedrock embedder to serve live fleet memory. ``reader_agent`` is the
     (registered) identity the read views query as — institutional memory is
-    shared, so this is a caller label, not a filter.
+    shared, so this is a caller label, not a filter. ``config`` (the demo config
+    when offline) drives the immune gate behind the launch-attack button.
     """
+    from demoapp.data import demo_config
+
     injected = adapter is not None and embedder is not None
     if not injected:
         from demoapp.data import build_demo_world
@@ -71,6 +87,7 @@ def create_app(
         world = build_demo_world()
         adapter = adapter or world.adapter
         embedder = embedder or world.embedder
+        config = config or world.config
 
     # The data source, surfaced on every relevant response and in the UI so
     # seeded offline data is NEVER mistaken for a live fleet (the project plan §3.2).
@@ -81,6 +98,8 @@ def create_app(
     app.state.embedder = embedder
     app.state.reader_agent = reader_agent
     app.state.mode = mode
+    app.state.config = config or demo_config()
+    app.state.attacks_launched = 0
 
     _register_routes(app)
     return app
@@ -244,6 +263,41 @@ def _register_routes(app: FastAPI) -> None:
             )
         return {"quarantine": feed}
 
+    @app.get("/api/attack/categories")
+    async def attack_categories() -> dict[str, Any]:
+        from demoapp.data import poison_categories
+
+        return {"categories": poison_categories(), "token_required": _token_required()}
+
+    @app.post("/api/attack")
+    async def attack(request: Request, body: AttackRequest) -> dict[str, Any]:
+        """Release the adversary (§9.1.5): run one committed poison case through the
+        REAL immune gate against this app's memory. A caught attack lands in the
+        quarantine feed exactly as a production interception would — not staged.
+
+        Token-gated (the project plan §9.1): destructive/write demo actions require
+        ``ALETHEIA_DEMO_TOKEN`` when it is set. Rate-capped per process so a public
+        button cannot grow memory without bound."""
+        from demoapp.data import launch_attack, poison_categories
+
+        _require_demo_token(body.token)
+        if body.category not in poison_categories():
+            raise HTTPException(status_code=422, detail=f"unknown attack category: {body.category}")
+        if request.app.state.attacks_launched >= _MAX_LAUNCHED_ATTACKS:
+            raise HTTPException(status_code=429, detail="attack rate cap reached for this session")
+
+        index = request.app.state.attacks_launched
+        request.app.state.attacks_launched += 1
+        result = launch_attack(
+            request.app.state.adapter,
+            request.app.state.embedder,
+            request.app.state.config,
+            category=body.category,
+            index=index,
+        )
+        result["simulated"] = request.app.state.mode != "live"
+        return result
+
     @app.get("/api/results")
     async def results() -> JSONResponse:
         """The real R1/R2 experiment numbers, from the committed run rows."""
@@ -291,6 +345,20 @@ def _register_routes(app: FastAPI) -> None:
             cache = build_ablation_panels()
             request.app.state._ablation = cache
         return {"simulated": True, "source": "seeded-offline", "panels": cache}
+
+
+def _token_required() -> bool:
+    return bool(os.environ.get(_DEMO_TOKEN_ENV))
+
+
+def _require_demo_token(supplied: str | None) -> None:
+    """Enforce the demo token on write/attack actions when one is configured.
+
+    When ``ALETHEIA_DEMO_TOKEN`` is unset (local dev) the gate is open; a public
+    deployment sets it, and every attack must present it. Fail-closed on mismatch."""
+    required = os.environ.get(_DEMO_TOKEN_ENV)
+    if required and supplied != required:
+        raise HTTPException(status_code=403, detail="invalid or missing demo token")
 
 
 def _baseline_world(app: FastAPI):
