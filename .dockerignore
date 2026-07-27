@@ -1,0 +1,41 @@
+# Keep the build context (and image) small and free of anything internal or secret.
+
+# Version control / tooling
+.git
+.gitignore
+.github
+.ruff_cache
+.pytest_cache
+.mypy_cache
+**/__pycache__
+**/*.pyc
+
+# Virtualenvs / local env
+.venv
+venv
+.env
+.env.*
+!.env.example
+
+# Tests are not shipped in the runtime image
+tests
+
+# Internal / local-only docs and artifacts (never ship these)
+CLAUDE.md
+CLAUDE_*.md
+docs/internal
+*.bundle
+.p3_review_prompt.txt
+
+# Coverage / build outputs
+htmlcov
+.coverage
+dist
+build
+*.egg-info
+
+# docs/ is not needed at runtime EXCEPT the committed experiment run rows that
+# /api/results reads. Exclude the rest of docs/ from the image.
+docs/**
+!docs/experiment_data
+!docs/experiment_data/**

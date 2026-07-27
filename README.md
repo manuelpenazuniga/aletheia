@@ -181,6 +181,30 @@ What the local smoke run proves end to end: serializable isolation, `memories` a
 C-SPANN index actually serving nearest-neighbour search (verified via `EXPLAIN`),
 and `supersede` preserving the row instead of deleting it.
 
+## The demo dashboard
+
+The public dashboard (fleet view, live semantic search + provenance, the canonical
+"git of beliefs", an interactive kill-switch/ablation wall, and a launch-an-attack
+immune panel) is a container that runs standalone — no cloud credentials needed to
+start. It serves a seeded offline world and says so (`mode: offline-demo`); the same
+image serves live fleet memory once a CockroachDB + Bedrock adapter is injected.
+
+```bash
+docker build -t aletheia-demo .
+docker run -p 8080:8080 aletheia-demo          # then open http://localhost:8080
+```
+
+Deploy to the public URL (AWS App Runner, image-based) once the account is ready:
+
+```bash
+AWS_REGION=us-east-1 ACCESS_ROLE_ARN=arn:aws:iam::<acct>:role/AppRunnerECRAccessRole \
+  ALETHEIA_DEMO_TOKEN=<demo-secret> ./infra/deploy_demoapp.sh
+```
+
+The script builds for `linux/amd64`, pushes to ECR, and creates or updates the App
+Runner service (health check on `/healthz`, port 8080). `ALETHEIA_DEMO_TOKEN`, when
+set, gates the attack/destructive demo buttons.
+
 ## Repository layout
 
 ```
