@@ -139,3 +139,44 @@ def test_default_app_builds_offline():
     c = TestClient(create_app())
     assert c.get("/healthz").status_code == 200
     assert c.get("/api/overview").json()["totals"]["active"] > 0
+
+
+# --------------------------------------------------------------- kill-switch
+def test_ablation_wall_diverges(client):
+    panels = client.get("/api/ablation").json()["panels"]
+    by = {p["label"]: p for p in panels}
+    assert set(by) == {"full", "no-consolidation", "no-immune", "no-forgetting"}
+    full = by["full"]["metrics"]
+    # full is the clean reference.
+    assert full["stale_active"] == 0
+    assert full["poison_active"] == 0
+    # Each ablation degrades its own target, measurably, vs full.
+    assert by["no-consolidation"]["metrics"]["canonical_facts"] < full["canonical_facts"]
+    assert by["no-immune"]["metrics"]["poison_active"] > full["poison_active"]
+    assert by["no-forgetting"]["metrics"]["active_cost_tokens"] > full["active_cost_tokens"]
+
+
+def test_killswitch_all_on_matches_baseline(client):
+    d = client.post("/api/killswitch", json={}).json()  # defaults = all on
+    assert d["flags"] == {
+        "enable_consolidation": True,
+        "enable_forgetting": True,
+        "enable_gossip": True,
+        "enable_immune": True,
+    }
+    assert d["metrics"] == d["baseline"]  # all-on IS the baseline
+
+
+def test_killswitch_disable_immune_contaminates(client):
+    d = client.post("/api/killswitch", json={"enable_immune": False}).json()
+    assert d["flags"]["enable_immune"] is False
+    # Poison now sits in the active fleet; the baseline had none.
+    assert d["metrics"]["poison_active"] > 0
+    assert d["baseline"]["poison_active"] == 0
+    assert d["metrics"]["quarantined"] == 0
+
+
+def test_killswitch_disable_forgetting_grows_footprint(client):
+    d = client.post("/api/killswitch", json={"enable_forgetting": False}).json()
+    assert d["metrics"]["active_cost_tokens"] > d["baseline"]["active_cost_tokens"]
+    assert d["metrics"]["archived"] == 0

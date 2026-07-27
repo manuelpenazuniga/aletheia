@@ -74,6 +74,26 @@
     .empty { color: var(--muted); font-style: italic; padding: 20px 0; }
     code { font-family: var(--mono); font-size: 12px; background: var(--panel2);
       padding: 1px 5px; border-radius: 4px; }
+    .toggles { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+    .toggle { display: flex; align-items: center; gap: 8px; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; cursor: pointer;
+      user-select: none; font-size: 13px; }
+    .toggle.off { border-color: var(--bad); color: var(--bad); }
+    .toggle .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); }
+    .toggle.off .dot { background: var(--bad); }
+    .delta { font-family: var(--mono); }
+    .delta.worse { color: var(--bad); } .delta.same { color: var(--muted); }
+    .wall { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .panel-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px; }
+    .panel-card.ablated { border-color: #4a2a2a; }
+    .panel-card h3 { margin: 0 0 4px; font-family: var(--mono); font-size: 14px; }
+    .panel-card.ablated h3 { color: var(--bad); }
+    .panel-card .big { font-size: 30px; font-weight: 700; font-family: var(--mono); margin: 8px 0 2px; }
+    .panel-card .big.bad { color: var(--bad); } .panel-card .big.good { color: var(--good); }
+    .panel-card .effect { color: var(--muted); font-size: 12px; margin-top: 10px; line-height: 1.45; }
+    .panel-card .mini { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px;
+      font-family: var(--mono); font-size: 11px; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -88,6 +108,7 @@
     <button data-view="memory">Memory &amp; search</button>
     <button data-view="canonical">Canonical facts</button>
     <button data-view="immune">Immune feed</button>
+    <button data-view="ablation">Kill-switch</button>
     <button data-view="results">Results</button>
   </nav>
   <main>
@@ -130,6 +151,16 @@
       <h2>Immune feed — quarantine log</h2>
       <p class="sub">Poisoned writes the immune gate rejected at ingest. Quarantined, not deleted — auditable.</p>
       <div id="quar-list"></div>
+    </section>
+
+    <section id="ablation">
+      <h2>Kill-switch — is each component necessary?</h2>
+      <p class="sub">Turn a component off and the world is rebuilt for real through the same core cycles. Watch stale knowledge, poison, or footprint climb.</p>
+      <div class="toggles" id="toggles"></div>
+      <div id="killswitch-metrics"></div>
+      <h2 style="margin-top:28px">Ablation wall</h2>
+      <p class="sub">The full world beside each single-component ablation — same scenario, same seed, one flag removed.</p>
+      <div class="wall" id="wall"></div>
     </section>
 
     <section id="results">
@@ -318,11 +349,83 @@
     }
     function rowEmpty(span, txt) { const tr = el("tr"); const td = el("td", "empty", txt); td.colSpan = span; tr.append(td); return tr; }
 
+    // ---- kill-switch + ablation ----
+    const FLAG_LABELS = {
+      enable_consolidation: "Consolidation", enable_forgetting: "Forgetting",
+      enable_gossip: "Gossip", enable_immune: "Immune",
+    };
+    const METRIC_LABELS = {
+      canonical_facts: "canonical facts", poison_active: "poison in fleet",
+      active_cost_tokens: "active tokens", stale_active: "stale retrievable",
+    };
+    // Direction that means "degraded" for each target metric.
+    const WORSE_IF_LOWER = new Set(["canonical_facts"]);
+    const ksFlags = { enable_consolidation: true, enable_forgetting: true, enable_gossip: true, enable_immune: true };
+
+    function renderToggles() {
+      const box = $("#toggles"); box.innerHTML = "";
+      for (const [k, label] of Object.entries(FLAG_LABELS)) {
+        const on = ksFlags[k];
+        const t = el("div", "toggle" + (on ? "" : " off"));
+        t.append(el("span", "dot"), el("span", null, label + (on ? "" : " — off")));
+        t.onclick = () => { ksFlags[k] = !ksFlags[k]; renderToggles(); runKillswitch(); };
+        box.append(t);
+      }
+    }
+    async function runKillswitch() {
+      const d = await api("/api/killswitch", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(ksFlags),
+      });
+      const box = $("#killswitch-metrics"); box.innerHTML = "";
+      const order = ["stale_active", "poison_active", "active_cost_tokens", "canonical_facts", "quarantined", "archived"];
+      const cards = el("div", "cards");
+      for (const key of order) {
+        const cur = d.metrics[key], base = d.baseline[key];
+        const worse = key === "canonical_facts" ? cur < base : cur > base;
+        const c = el("div", "card");
+        c.append(el("div", "n" + (worse ? " bad" : ""), esc(cur)));
+        c.append(el("div", "l", (METRIC_LABELS[key] || key.replace(/_/g, " "))));
+        if (cur !== base) c.append(el("div", "delta " + (worse ? "worse" : "same"), "was " + base));
+        cards.append(c);
+      }
+      box.append(cards);
+    }
+    async function loadAblation() {
+      renderToggles();
+      const d = await api("/api/ablation");
+      const full = d.panels.find(p => p.label === "full");
+      const wall = $("#wall"); wall.innerHTML = "";
+      for (const p of d.panels) {
+        const ablated = p.label !== "full";
+        const c = el("div", "panel-card" + (ablated ? " ablated" : ""));
+        c.append(el("h3", null, p.label));
+        if (ablated && p.target_metric && p.target_metric !== "none") {
+          const key = p.target_metric;
+          const val = p.metrics[key], fullVal = full.metrics[key];
+          const worse = WORSE_IF_LOWER.has(key) ? val < fullVal : val > fullVal;
+          c.append(el("div", "big " + (worse ? "bad" : "good"), esc(val)));
+          c.append(el("div", "l", (METRIC_LABELS[key] || key) + "  (full: " + fullVal + ")"));
+        } else {
+          c.append(el("div", "big good", "✓"));
+          c.append(el("div", "l", "reference"));
+        }
+        const mini = el("div", "mini");
+        for (const k of ["stale_active", "poison_active", "active_cost_tokens", "canonical_facts"]) {
+          mini.append(el("span", null, (METRIC_LABELS[k] || k) + ": " + p.metrics[k]));
+        }
+        c.append(mini);
+        if (p.effect) c.append(el("div", "effect", p.effect));
+        wall.append(c);
+      }
+      runKillswitch();
+    }
+
     $("#search-btn").onclick = doSearch;
     $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
 
     // initial load
-    loadOverview(); loadMemories(); loadCanonical(); loadQuarantine(); loadResults();
+    loadOverview(); loadMemories(); loadCanonical(); loadQuarantine(); loadResults(); loadAblation();
   </script>
 </body>
 </html>

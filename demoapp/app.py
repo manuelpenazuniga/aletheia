@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from core.adapter import MemoryNotFound, StorageAdapter
+from core.config import AletheiaConfig
 from core.embeddings import Embedder
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -38,6 +39,13 @@ _DEFAULT_BUDGET = 4000
 class SearchRequest(BaseModel):
     query: str
     k: int = _DEFAULT_SEARCH_K
+
+
+class KillSwitchRequest(BaseModel):
+    enable_consolidation: bool = True
+    enable_forgetting: bool = True
+    enable_gossip: bool = True
+    enable_immune: bool = True
 
 
 def create_app(
@@ -223,6 +231,44 @@ def _register_routes(app: FastAPI) -> None:
     async def results() -> JSONResponse:
         """The real R1/R2 experiment numbers, from the committed run rows."""
         return JSONResponse(_load_results())
+
+    @app.post("/api/killswitch")
+    async def killswitch(body: KillSwitchRequest) -> dict[str, Any]:
+        """Flip the four feature flags and rebuild the world for real, returning the
+        recomputed metrics next to the all-on baseline. This is the interactive
+        proof (§9.1.3) that each component is necessary: the judge turns one off and
+        watches stale knowledge, poison, or footprint climb. Offline only — it
+        rebuilds a seeded InMemoryAdapter world, so it never touches live memory."""
+        from demoapp.data import build_demo_world, demo_config, flags_of, world_metrics
+
+        cfg = demo_config(
+            AletheiaConfig(
+                enable_consolidation=body.enable_consolidation,
+                enable_forgetting=body.enable_forgetting,
+                enable_gossip=body.enable_gossip,
+                enable_immune=body.enable_immune,
+            )
+        )
+        world = build_demo_world(config=cfg)
+        baseline = build_demo_world(config=demo_config())
+        return {
+            "flags": flags_of(cfg),
+            "metrics": world_metrics(world.adapter),
+            "baseline": world_metrics(baseline.adapter),
+        }
+
+    @app.get("/api/ablation")
+    async def ablation(request: Request) -> dict[str, Any]:
+        """The ablation wall (§9.1.6): the full world and each single-component
+        ablation, same scenario, scored by the same metrics. Cached on first call
+        since the four worlds are deterministic."""
+        cache = getattr(request.app.state, "_ablation", None)
+        if cache is None:
+            from demoapp.data import build_ablation_panels
+
+            cache = build_ablation_panels()
+            request.app.state._ablation = cache
+        return {"panels": cache}
 
 
 # --------------------------------------------------------------------------- #
