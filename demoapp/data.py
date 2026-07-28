@@ -32,6 +32,7 @@ from core.config import AletheiaConfig
 from core.consolidation import consolidate
 from core.embeddings import DeterministicEmbedder, Embedder
 from core.forgetting import run_forgetting
+from core.gossip import gossip_tick
 from core.immune import ImmuneSystem
 from core.models import MemoryEvent, MemoryKind, MemoryStatus
 from ingest.immune import persist_quarantine
@@ -267,6 +268,144 @@ def launch_attack(
         "reason": verdict.reason.value if verdict.reason else None,
         "detector": verdict.detector,
         "quarantined_mem_id": quar_id,
+    }
+
+
+_CONTAGION_FLEET = ("sre-01", "sre-02", "sre-03", "ops-01")
+
+
+def build_contagion(*, enable_immune: bool, ticks: int = 6) -> dict[str, Any]:
+    """Trace how a single poisoned fact spreads through the fleet — or doesn't.
+
+    Real mechanics, not a mock: a benign fleet of SRE agents each holds one active
+    memory (so they are gossip peers), then the adversary introduces ONE poisoned
+    fact through the REAL immune gate. With ``enable_immune=False`` the poison
+    survives, becomes a gossip candidate, and the real ``gossip_tick`` cycle
+    propagates it hop by hop (degrading the text as it travels); we reconstruct the
+    exact contagion tree from provenance (``parent_mem`` / ``gossip_source_agent``).
+    With ``enable_immune=True`` the same write is quarantined at the gate, is never
+    an active gossip candidate, and the fleet stays clean.
+
+    Returns the fleet graph the dashboard renders: nodes (agents, contaminated or
+    not), the propagation edges of the poison lineage, and the mutating content at
+    each hop. Deterministic — agent-level structure does not depend on random ids.
+    """
+    config = demo_config(AletheiaConfig(enable_immune=enable_immune, enable_gossip=True))
+    embedder = DeterministicEmbedder(dim=DEMO_DIM, seed=0)
+    adapter = InMemoryAdapter(embedding_dim=DEMO_DIM)
+
+    # 1. A benign fleet: each agent holds one active episodic memory, which is what
+    #    makes it a gossip peer (peers = distinct authors of ACTIVE memory).
+    for aid in _CONTAGION_FLEET:
+        _ensure_agent(adapter, aid, "sre")
+        content = f"{aid}: nominal — no anomalies on my shard this cycle"
+        adapter.write_episode(
+            aid,
+            MemoryEvent(
+                agent_id=aid,
+                content=content,
+                kind=MemoryKind.EPISODIC,
+                importance=0.5,
+                embedding=embedder.embed(content),
+            ),
+        )
+
+    # 2. The adversary introduces ONE poisoned fact through the real immune gate.
+    case = load_poison_cases(category="injection_pattern")[0]
+    _ensure_agent(adapter, case.agent_id, "adversary")
+    event = poison_to_event(case, embedder)
+    verdict = ImmuneSystem(adapter, embedder, config).inspect(event)
+    if verdict.accepted:  # immune off (or slipped) → written active, will propagate
+        poison_id = adapter.write_episode(
+            event.agent_id, replace(event, embedding=embedder.embed(event.content))
+        )
+    else:  # immune on → quarantined at the gate, never a gossip candidate
+        poison_id = persist_quarantine(
+            adapter,
+            embedder,
+            event,
+            reason=(verdict.reason.value if verdict.reason else ""),
+            detector=verdict.detector or "",
+            payload=dict(verdict.payload),
+        )
+
+    # 3. Run the REAL gossip cycle. Each tick moves the poison (and its children,
+    #    within the hop cap) one hop further across the fleet.
+    for _ in range(ticks):
+        gossip_tick(adapter, embedder, config)
+
+    # 4. Reconstruct the poison lineage from provenance: every memory whose ancestry
+    #    roots at the poison id.
+    mems = adapter.list_memories(status=None)
+    by_id = {m.mem_id: m for m in mems if m.mem_id}
+
+    def roots_at_poison(m: MemoryEvent) -> bool:
+        seen: set[str] = set()
+        cur: MemoryEvent | None = m
+        while cur is not None and cur.mem_id and cur.mem_id not in seen:
+            seen.add(cur.mem_id)
+            if cur.mem_id == poison_id:
+                return True
+            cur = by_id.get(cur.parent_mem) if cur.parent_mem else None
+        return False
+
+    origin = case.agent_id
+    lineage = [m for m in mems if roots_at_poison(m)]
+    # Victims = fleet agents (not the origin) now holding an active poison-derived
+    # memory. The adversary is the source, never counted as a victim.
+    contaminated = {
+        m.agent_id
+        for m in lineage
+        if m.status == MemoryStatus.ACTIVE and m.parent_mem is not None and m.agent_id != origin
+    }
+
+    # First-infection tree: ONE edge per victim — how it was first contaminated
+    # (minimum hop, deterministic tie-break by source). The full gossip mesh has
+    # redundant re-shares whose exact shape depends on random ids; the first-
+    # infection tree is the clean, reproducible contagion path.
+    first: dict[str, tuple[int, str, str]] = {}  # victim -> (hop, source, content)
+    degraded: dict[int, str] = {}  # hop -> a representative content, for the mutation view
+    for m in lineage:
+        src = m.meta.get("gossip_source_agent") if isinstance(m.meta, dict) else None
+        if not (src and m.status == MemoryStatus.ACTIVE and m.agent_id != origin):
+            continue
+        cand = (m.hop_count, src, m.content)
+        if m.agent_id not in first or cand < first[m.agent_id]:
+            first[m.agent_id] = cand
+        degraded.setdefault(m.hop_count, m.content)
+    edges = [
+        {"from": src, "to": victim, "hop": hop, "content": content}
+        for victim, (hop, src, content) in sorted(first.items())
+    ]
+    edges.sort(key=lambda e: (e["hop"], e["from"], e["to"]))
+
+    # The poison text mutating as it travels — "information degrades as it
+    # propagates" (C4), made visible. Hop 0 is the original write.
+    degradation = [{"hop": 0, "content": case.content}] + [
+        {"hop": h, "content": degraded[h]} for h in sorted(degraded)
+    ]
+
+    agents = [*_CONTAGION_FLEET, origin]
+    nodes = [
+        {
+            "agent_id": aid,
+            "role": "adversary" if aid == case.agent_id else "sre",
+            "origin": aid == case.agent_id,
+            "contaminated": aid in contaminated,
+        }
+        for aid in agents
+    ]
+    return {
+        "enable_immune": enable_immune,
+        "detected": not verdict.accepted,
+        "quarantined": not verdict.accepted,
+        "poison_content": case.content,
+        "detector": verdict.detector,
+        "nodes": nodes,
+        "edges": edges,
+        "degradation": degradation,
+        "contaminated_count": sum(1 for n in nodes if n["contaminated"]),
+        "fleet_size": len(_CONTAGION_FLEET),
     }
 
 

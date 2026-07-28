@@ -267,6 +267,40 @@ def test_attack_token_gate(world, monkeypatch):
     assert ok.status_code == 200 and ok.json()["detected"] is True
 
 
+# ----------------------------------------------------- hallucination contagion
+def test_contagion_spreads_only_without_immune(client):
+    d = client.get("/api/contagion").json()
+    assert d["simulated"] is True and d["source"] == "seeded-offline"
+    off, on = d["immune_off"], d["immune_on"]
+    # Immune OFF: the poison is accepted and gossip spreads it to the whole fleet.
+    assert off["detected"] is False
+    assert off["contaminated_count"] == off["fleet_size"] > 0
+    assert len(off["edges"]) > 0
+    # Immune ON: quarantined at the gate, never a gossip candidate — fleet clean.
+    assert on["detected"] is True and on["quarantined"] is True
+    assert on["contaminated_count"] == 0
+    assert on["edges"] == []
+    # The origin (adversary) is marked, never counted as a victim.
+    origins = [n for n in off["nodes"] if n["origin"]]
+    assert len(origins) == 1 and not origins[0]["contaminated"]
+
+
+def test_contagion_shows_content_degrading(client):
+    off = client.get("/api/contagion").json()["immune_off"]
+    steps = off["degradation"]
+    # Hop 0 is the full poison; later hops are shorter (words dropped as it travels).
+    assert steps[0]["hop"] == 0
+    assert len(steps) >= 2
+    assert len(steps[-1]["content"]) < len(steps[0]["content"])
+
+
+def test_contagion_is_deterministic():
+    from demoapp.data import build_contagion
+
+    runs = [build_contagion(enable_immune=False) for _ in range(3)]
+    assert all(r == runs[0] for r in runs), "contagion graph must not wander between builds"
+
+
 # ------------------------------------------------------------- determinism
 def test_demo_world_is_deterministic():
     # The integrity policy forbids results that wander between runs. The demo world

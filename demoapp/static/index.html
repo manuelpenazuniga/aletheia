@@ -511,6 +511,52 @@
       .card .n { font-size: 25px; }
       .search-row { flex-wrap: wrap; }
     }
+    /* ---- hallucination contagion ---- */
+    .cg-toggle { display: inline-flex; gap: 2px; background: var(--seg-bg); padding: 3px;
+      border-radius: 999px; margin: 6px 0 22px; }
+    .cg-toggle button { border: none; background: transparent; color: var(--muted);
+      font: 600 13px var(--sans); padding: 7px 18px; border-radius: 999px; cursor: pointer;
+      transition: color .2s var(--ease-out); }
+    .cg-toggle button.active { background: var(--card); color: var(--ink); box-shadow: var(--shadow-thumb); }
+    .cg-stage { display: grid; grid-template-columns: minmax(0, 400px) 1fr; gap: 26px; align-items: start; }
+    @media (max-width: 780px) { .cg-stage { grid-template-columns: 1fr; } }
+    .cg-graphwrap { background: var(--card); border: 1px solid var(--hairline); border-radius: 20px;
+      box-shadow: var(--shadow-card); padding: 10px; }
+    .cg-svg { width: 100%; height: auto; display: block; }
+    .cg-edge { stroke: var(--bad); stroke-width: 2.5; opacity: .5; stroke-linecap: round;
+      stroke-dasharray: var(--len); stroke-dashoffset: var(--len);
+      animation: cg-draw .55s var(--ease-out) forwards; animation-delay: var(--d, 0ms); }
+    @keyframes cg-draw { to { stroke-dashoffset: 0; } }
+    .cg-node { transform-box: fill-box; }
+    .cg-node.pop { opacity: 0; animation: cg-pop .5s var(--spring) forwards; animation-delay: var(--d, 0ms); }
+    @keyframes cg-pop { from { opacity: 0; } to { opacity: 1; } }
+    .cg-node .nlab { font: 700 15px var(--sans); }
+    .cg-node .ncap { font: 600 10px var(--mono); fill: var(--muted); }
+    .cg-pulse { fill: var(--bad-fill); opacity: 0; animation: cg-pulse 1.8s ease-out infinite;
+      animation-delay: var(--d, 0ms); }
+    @keyframes cg-pulse { 0% { opacity: .3; r: 20px; } 70%, 100% { opacity: 0; r: 40px; } }
+    .cg-verdict { display: flex; gap: 12px; align-items: flex-start; border-radius: 16px;
+      padding: 15px 17px; border: 1px solid var(--hairline); margin-bottom: 16px; }
+    .cg-verdict.bad { background: var(--bad-tint); border-color: var(--bad-border); }
+    .cg-verdict.good { background: var(--good-tint); border-color: var(--good-border); }
+    .cg-verdict .icn { width: 24px; height: 24px; flex: none; margin-top: 1px; }
+    .cg-verdict.bad .icn { color: var(--bad); } .cg-verdict.good .icn { color: var(--good); }
+    .cg-verdict h3 { margin: 0 0 4px; font-size: 15px; letter-spacing: -.01em; }
+    .cg-verdict.bad h3 { color: var(--bad-on-tint); } .cg-verdict.good h3 { color: var(--good); }
+    .cg-verdict p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+    .cg-degrade { border: 1px solid var(--hairline); border-radius: 16px; padding: 14px 16px;
+      background: var(--card-2); }
+    .cg-degrade .lbl { font-size: 12.5px; color: var(--muted); margin-bottom: 12px; line-height: 1.4; }
+    .cg-step { display: flex; gap: 12px; align-items: baseline; padding: 5px 0; }
+    .cg-step .h { font: 600 10px var(--mono); color: var(--muted-2); flex: none; width: 46px;
+      text-transform: uppercase; letter-spacing: .04em; }
+    .cg-step .t { font: 12.5px/1.5 var(--mono); color: var(--ink); }
+    .cg-step.faded .t { color: var(--muted); }
+    @media (prefers-reduced-motion: reduce) {
+      .cg-edge { animation: none; stroke-dashoffset: 0; }
+      .cg-node.pop { animation: none; opacity: 1; }
+      .cg-pulse { animation: none; opacity: 0; }
+    }
   </style>
 </head>
 <body>
@@ -528,6 +574,7 @@
         <button data-view="memory">Memory &amp; search</button>
         <button data-view="canonical">Canonical facts</button>
         <button data-view="immune">Immune feed</button>
+        <button data-view="contagion">Contagion</button>
         <button data-view="ablation">Kill-switch</button>
         <button data-view="results">Results</button>
       </nav>
@@ -587,6 +634,24 @@
       </div>
       <div id="attack-result"></div>
       <div id="quar-list"></div>
+    </section>
+
+    <section id="contagion">
+      <h2 class="view-title">Hallucination contagion</h2>
+      <p class="sub">One poisoned write. With the immune gate <strong>off</strong>, the gossip cycle spreads it across the whole fleet — and the fact mutates as it travels. With the gate <strong>on</strong>, it's quarantined on arrival and the fleet stays clean. Same real gossip + immune cycles; a seeded offline simulation.</p>
+      <div class="cg-toggle" id="cg-toggle" role="tablist" aria-label="Immune system">
+        <button data-imm="off" class="active">Immune off</button>
+        <button data-imm="on">Immune on</button>
+      </div>
+      <div class="cg-stage">
+        <div class="cg-graphwrap">
+          <svg id="cg-svg" class="cg-svg" viewBox="0 0 420 420" role="img" aria-label="Fleet contagion graph"></svg>
+        </div>
+        <div class="cg-side">
+          <div id="cg-verdict"></div>
+          <div class="cg-degrade" id="cg-degrade"></div>
+        </div>
+      </div>
     </section>
 
     <section id="ablation">
@@ -1082,9 +1147,96 @@
       b.onclick = () => { ksFlags[b.dataset.flag] = !ksFlags[b.dataset.flag]; syncToggles(); runKillswitch(); };
     }
 
+    // ---- hallucination contagion ----
+    const SVGNS = "http://www.w3.org/2000/svg";
+    const svgEl = (tag, attrs) => {
+      const e = document.createElementNS(SVGNS, tag);
+      for (const k in attrs) e.setAttribute(k, attrs[k]);
+      return e;
+    };
+    let CONTAGION = null;
+    async function loadContagion() {
+      CONTAGION = await api("/api/contagion");
+      renderContagion("off");
+      $("#cg-toggle").addEventListener("click", (e) => {
+        const b = e.target.closest("button"); if (b) renderContagion(b.dataset.imm);
+      });
+    }
+    function renderContagion(mode) {
+      const d = mode === "on" ? CONTAGION.immune_on : CONTAGION.immune_off;
+      document.querySelectorAll("#cg-toggle button").forEach(b => b.classList.toggle("active", b.dataset.imm === mode));
+      cgGraph(d); cgVerdict(d, mode); cgDegrade(d, mode);
+    }
+    function cgPositions(d) {
+      const cx = 210, cy = 210, R = 138, pos = {};
+      const fleet = d.nodes.filter(n => !n.origin);
+      d.nodes.forEach(n => { if (n.origin) pos[n.agent_id] = [cx, cy]; });
+      fleet.forEach((n, i) => {
+        const a = -Math.PI / 2 + i * (2 * Math.PI / fleet.length);
+        pos[n.agent_id] = [cx + R * Math.cos(a), cy + R * Math.sin(a)];
+      });
+      return pos;
+    }
+    function cgGraph(d) {
+      const svg = $("#cg-svg"); svg.textContent = "";
+      const pos = cgPositions(d);
+      d.edges.forEach((e, i) => {
+        const a = pos[e.from], b = pos[e.to]; if (!a || !b) return;
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        const line = svgEl("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], class: "cg-edge" });
+        line.style.setProperty("--len", len);
+        line.style.setProperty("--d", (i * 110) + "ms");
+        svg.append(line);
+      });
+      d.nodes.forEach((n, i) => {
+        const p = pos[n.agent_id];
+        const g = svgEl("g", { class: "cg-node pop", transform: `translate(${p[0]},${p[1]})` });
+        g.style.setProperty("--d", (160 + i * 80) + "ms");
+        if (n.contaminated) g.append(svgEl("circle", { r: 20, class: "cg-pulse" }));
+        const rad = n.origin ? 26 : 20;
+        const fill = n.origin ? "var(--warn)" : n.contaminated ? "var(--bad-fill)" : "var(--good-fill)";
+        g.append(svgEl("circle", { r: rad, fill, stroke: "var(--card)", "stroke-width": 3 }));
+        const lab = svgEl("text", { class: "nlab", "text-anchor": "middle", dy: 5, fill: "#fff" });
+        lab.textContent = n.origin ? "☣" : (n.contaminated ? "✕" : "✓");
+        g.append(lab);
+        const cap = svgEl("text", { class: "ncap", "text-anchor": "middle", y: rad + 15 });
+        cap.textContent = n.agent_id;
+        g.append(cap);
+        svg.append(g);
+      });
+    }
+    function cgVerdict(d, mode) {
+      const box = $("#cg-verdict"); box.textContent = "";
+      const good = mode === "on";
+      box.className = "cg-verdict enter " + (good ? "good" : "bad");
+      box.append(icon(good ? "shield" : "warn"));
+      const body = el("div");
+      if (good) {
+        body.append(el("h3", null, "Contained — the fleet stays clean"));
+        body.append(el("p", null, `The immune gate quarantined the poisoned write on arrival (detector: ${d.detector}). It never entered active memory, so gossip had nothing to propagate — 0 of ${d.fleet_size} agents contaminated.`));
+      } else {
+        body.append(el("h3", null, `Hallucination contagion — ${d.contaminated_count} of ${d.fleet_size} agents infected`));
+        body.append(el("p", null, "With no immune gate, one poisoned write is accepted and the gossip cycle propagates it across the whole fleet. Every agent now holds the false fact — and it mutated on the way."));
+      }
+      box.append(body);
+    }
+    function cgDegrade(d, mode) {
+      const box = $("#cg-degrade"); box.textContent = "";
+      box.append(el("div", "lbl", mode === "on"
+        ? "The poisoned write — quarantined, never propagated:"
+        : "The fact degrading as it propagates — “information degrades with distance”:"));
+      d.degradation.forEach((s, i) => {
+        const row = el("div", "cg-step enter" + (s.hop > 0 ? " faded" : ""));
+        row.style.setProperty("--d", (i * 70) + "ms");
+        row.append(el("span", "h", s.hop === 0 ? "origin" : "hop " + s.hop));
+        row.append(el("span", "t", "“" + s.content + "”"));
+        box.append(row);
+      });
+    }
+
     // initial load
     loadOverview(); loadMemories(); loadCanonical(); loadQuarantine(); loadResults();
-    loadAblation(); loadAttackCategories();
+    loadAblation(); loadAttackCategories(); loadContagion();
   </script>
 </body>
 </html>

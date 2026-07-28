@@ -298,6 +298,25 @@ def _register_routes(app: FastAPI) -> None:
         result["simulated"] = request.app.state.mode != "live"
         return result
 
+    @app.get("/api/contagion")
+    async def contagion(request: Request) -> dict[str, Any]:
+        """Hallucination contagion: how one poisoned fact spreads through the fleet
+        with the immune system off vs on (§0 — the adverse phenomenon the immune
+        system solves). Both scenarios are real gossip propagation traced from
+        provenance — a seeded offline simulation, cached (deterministic)."""
+        cache = getattr(request.app.state, "_contagion", None)
+        if cache is None:
+            from demoapp.data import build_contagion
+
+            cache = {
+                "simulated": True,
+                "source": "seeded-offline",
+                "immune_off": build_contagion(enable_immune=False),
+                "immune_on": build_contagion(enable_immune=True),
+            }
+            request.app.state._contagion = cache
+        return cache
+
     @app.get("/api/results")
     async def results() -> JSONResponse:
         """The real R1/R2 experiment numbers, from the committed run rows."""
