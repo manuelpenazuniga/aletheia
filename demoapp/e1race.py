@@ -96,9 +96,7 @@ def run_e1_race(
             rows_without_vector, vectors_without_row = find_divergences(store)
             divergence = len(rows_without_vector) + len(vectors_without_row)
             total = lost + divergence + dirty[0]
-            timeline.append(
-                {"writes": done, "naive_per_1000": round(total / done * 1000.0, 1)}
-            )
+            timeline.append({"writes": done, "naive_per_1000": round(total / done * 1000.0, 1)})
 
     return {
         "n": n,
