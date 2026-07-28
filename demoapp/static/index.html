@@ -109,8 +109,10 @@
       background: var(--chrome);
       -webkit-backdrop-filter: saturate(1.8) blur(18px);
       backdrop-filter: saturate(1.8) blur(18px);
-      border-bottom: 1px solid var(--hairline);
+      border-bottom: 1px solid transparent;
+      transition: border-color 0.25s ease;
     }
+    .chrome.scrolled { border-bottom-color: var(--hairline); }
     .head-row {
       display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
       padding-top: 16px; padding-bottom: 10px;
@@ -149,16 +151,17 @@
       position: absolute; top: 3px; bottom: 3px; left: 0; width: 0;
       border-radius: 999px; background: var(--seg-thumb);
       box-shadow: var(--shadow-thumb); opacity: 0;
+      will-change: transform;
     }
     .seg-thumb.ready {
       opacity: 1;
-      transition: transform 0.35s var(--spring), width 0.35s var(--spring);
+      transition: transform 0.3s var(--spring), width 0.3s var(--spring);
     }
 
     /* ---------- layout / type ---------- */
     main { padding: 28px 0 72px; }
     section { display: none; }
-    section.active { display: block; animation: view 0.45s var(--ease-out); }
+    section.active { display: block; animation: view 0.28s var(--ease-out); }
     .view-title { font-size: 26px; font-weight: 700; letter-spacing: -0.022em; margin: 4px 0 6px; }
     .sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; max-width: 64ch; }
     .group-title { font-size: 15px; font-weight: 600; margin: 28px 0 10px; }
@@ -279,8 +282,8 @@
       display: flex; gap: 12px; align-items: flex-start;
       border-radius: 16px; padding: 14px 16px; margin-bottom: 16px;
       font-size: 13px; line-height: 1.5; border: 1px solid var(--hairline);
-      animation: pop 0.5s var(--spring) both;
     }
+    .pop-in { animation: pop 0.42s var(--spring) both; }
     .verdict strong { display: block; font-size: 13.5px; margin-bottom: 4px; }
     .verdict.caught { background: var(--good-tint); border-color: var(--good-border); }
     .verdict.caught strong, .verdict.caught .icn { color: var(--good); }
@@ -350,6 +353,7 @@
       border-radius: 999px; background: #ffffff;
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 3px 6px rgba(0, 0, 0, 0.1);
       transition: transform 0.3s var(--spring);
+      will-change: transform;
     }
     .flag:not(.off) .knob { transform: translateX(17px); }
     .flag:not(.off):active .knob { transform: translateX(17px) scale(1.06); }
@@ -382,18 +386,26 @@
     .panel-card .effect { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 10px; }
 
     /* ---------- motion ---------- */
-    @keyframes rise { from { opacity: 0; transform: translateY(7px); } }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
     @keyframes pop { from { opacity: 0; transform: scale(0.965) translateY(4px); filter: blur(6px); } }
-    @keyframes view { from { opacity: 0; transform: translateY(8px); } }
+    @keyframes view { from { opacity: 0; transform: translateY(6px); } }
     @keyframes flashbg { from { background: var(--bad-tint); } }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-    .enter { animation: rise 0.5s var(--ease-out) both; animation-delay: var(--d, 0ms); }
+    @keyframes fade-only { from { opacity: 0; } }
+    /* .enter is one-shot: JS removes the class on animationend so revisiting a
+       view never replays the stagger — only first data arrival animates. */
+    .enter { animation: rise 0.3s var(--ease-out) both; animation-delay: var(--d, 0ms); }
 
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation: none !important;
         transition: none !important;
       }
+      /* gentler, not zero: the verdict keeps a non-vestibular opacity fade */
+      .pop-in { animation: fade-only 200ms ease both !important; }
+    }
+    @media (prefers-reduced-transparency: reduce) {
+      .chrome { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
     }
 
     /* ---------- responsive ---------- */
@@ -519,7 +531,7 @@
       const decimals = (str.split(".")[1] || "").length;
       const start = from != null && isFinite(parseFloat(from)) ? parseFloat(from) : 0;
       if (start === target) { node.textContent = str; return; }
-      const t0 = performance.now(), dur = 560;
+      const t0 = performance.now(), dur = 480;
       node.textContent = start.toFixed(decimals);
       const tick = (t) => {
         const p = Math.min(1, (t - t0) / dur);
@@ -533,6 +545,20 @@
       let i = 0;
       for (const n of nodes) { n.classList.add("enter"); n.style.setProperty("--d", Math.min(i++, 12) * 30 + "ms"); }
     }
+    // one-shot entrances: strip animation classes once played so a view
+    // revisit (display none -> block restarts keyframes) never replays them.
+    // Chrome fires no event when display:none cancels an animation mid-stagger,
+    // so the nav handler also sweeps the outgoing section (stripOneShotIn).
+    const stripOneShot = (n) => {
+      n.classList.remove("enter", "pop-in", "flash");
+      n.style.removeProperty("--d");
+    };
+    const stripOneShotIn = (root) => {
+      for (const n of root.querySelectorAll(".enter, .pop-in, .flash")) stripOneShot(n);
+    };
+    document.addEventListener("animationend", (e) => {
+      if (e.target.classList) stripOneShot(e.target);
+    });
     function tcard(inner) { const w = el("div", "tcard"); w.append(inner); return w; }
 
     // inline SVG icons — no network requests
@@ -552,12 +578,21 @@
     }
     navEl.addEventListener("click", (e) => {
       const btn = e.target.closest("button"); if (!btn) return;
+      const prev = document.querySelector("section.active");
+      if (prev && prev.id !== btn.dataset.view) stripOneShotIn(prev);
       document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b === btn));
       document.querySelectorAll("section").forEach(s => s.classList.toggle("active", s.id === btn.dataset.view));
       moveThumb(btn);
     });
     window.addEventListener("resize", () => { const b = $("nav button.active"); if (b) moveThumb(b); });
     moveThumb($("nav button.active"));
+
+    // scroll edge effect: the chrome's hairline only appears once content
+    // actually passes underneath it
+    const chromeEl = $(".chrome");
+    window.addEventListener("scroll", () => {
+      chromeEl.classList.toggle("scrolled", window.scrollY > 8);
+    }, { passive: true });
 
     // ---- health + data-source mode ----
     api("/healthz").then(h => {
@@ -703,11 +738,11 @@
         const box = $("#attack-result"); box.innerHTML = "";
         if (!r.ok) {
           const e = await r.json().catch(() => ({ detail: r.status }));
-          box.append(el("div", "verdict missed", "Attack blocked by demo guard: " + (e.detail || r.status)));
+          box.append(el("div", "verdict missed pop-in", "Attack blocked by demo guard: " + (e.detail || r.status)));
           return;
         }
         const d = await r.json();
-        const v = el("div", "verdict " + (d.detected ? "caught" : "missed"));
+        const v = el("div", "verdict pop-in " + (d.detected ? "caught" : "missed"));
         const head = d.detected
           ? "Quarantined by the immune gate — detector: " + d.detector + " (" + d.reason + ")"
           : "Not caught by this detector — written to active memory";
@@ -832,7 +867,7 @@
         const c = el("div", "card");
         const v = el("div", "n" + (worse ? " bad" : ""));
         c.append(v, el("div", "l", (METRIC_LABELS[key] || key.replace(/_/g, " "))));
-        if (cur !== base) c.append(el("div", "delta " + (worse ? "worse" : "same"), "was " + base));
+        if (cur !== base) c.append(el("div", "delta enter " + (worse ? "worse" : "same"), "was " + base));
         cards.append(c);
         countTo(v, cur, ksPrev ? ksPrev[key] : null);  // the metric climbs from its previous value
       }
