@@ -109,6 +109,20 @@ def _adapter(request: Request) -> StorageAdapter:
     return request.app.state.adapter
 
 
+def _projection(app: FastAPI):
+    """Fit (once, cached) a 2D landmark projection over every memory that carries an
+    embedding, and return it with those memories. Deterministic, so caching is safe."""
+    cache = getattr(app.state, "_projection", None)
+    if cache is None:
+        from demoapp.projection import fit
+
+        mems = [m for m in app.state.adapter.list_memories(status=None) if m.embedding]
+        proj = fit([m.embedding for m in mems])
+        cache = (proj, mems)
+        app.state._projection = cache
+    return cache
+
+
 def _register_routes(app: FastAPI) -> None:
     @app.get("/healthz")
     async def healthz(request: Request) -> dict[str, str]:
@@ -161,6 +175,51 @@ def _register_routes(app: FastAPI) -> None:
         vec = embedder.embed(query)
         hits = adapter.query_semantic(request.app.state.reader_agent, vec, k, _DEFAULT_BUDGET)
         return {"query": query, "hits": [_hit_dict(h) for h in hits]}
+
+    @app.get("/api/vector_map")
+    async def vector_map(request: Request) -> dict[str, Any]:
+        """The vector memory space, projected to 2D — every memory as a point,
+        placed by its real embedding. Powers the interactive map view. Coordinates
+        come from a deterministic landmark projection cached on first call."""
+        proj, mems = _projection(request.app)
+        points = [
+            {
+                "mem_id": m.mem_id,
+                "x": round(x, 4),
+                "y": round(y, 4),
+                "agent_id": m.agent_id,
+                "status": str(m.status),
+                "kind": str(m.kind),
+                "content": m.content,
+            }
+            for m in mems
+            for x, y in [proj.project(m.embedding)]
+        ]
+        return {"points": points, "count": len(points)}
+
+    @app.post("/api/vector_search")
+    async def vector_search(request: Request, body: SearchRequest) -> dict[str, Any]:
+        """Semantic search for the map: the real query_semantic nearest neighbours,
+        plus the query's own 2D position under the SAME projection so the map can
+        drop the query point and light up the memories it actually retrieved."""
+        embedder = request.app.state.embedder
+        query = body.query.strip()
+        if not query:
+            raise HTTPException(status_code=422, detail="query must not be empty")
+        if len(query) > _MAX_QUERY_LEN:
+            raise HTTPException(status_code=422, detail=f"query exceeds {_MAX_QUERY_LEN} chars")
+        k = max(1, min(body.k, _MAX_SEARCH_K))
+        proj, _ = _projection(request.app)
+        vec = embedder.embed(query)
+        hits = _adapter(request).query_semantic(
+            request.app.state.reader_agent, vec, k, _DEFAULT_BUDGET
+        )
+        qx, qy = proj.project(vec)
+        return {
+            "query": query,
+            "query_xy": [round(qx, 4), round(qy, 4)],
+            "hits": [{"mem_id": h.mem_id, "score": round(h.score, 4)} for h in hits],
+        }
 
     @app.get("/api/provenance/{mem_id}")
     async def provenance(request: Request, mem_id: str) -> dict[str, Any]:

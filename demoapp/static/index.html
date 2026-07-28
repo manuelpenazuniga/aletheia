@@ -511,6 +511,51 @@
       .card .n { font-size: 25px; }
       .search-row { flex-wrap: wrap; }
     }
+    /* ---- vector memory map ---- */
+    .go.ghost { background: transparent; color: var(--muted); box-shadow: none;
+      border: 1px solid var(--hairline-strong); }
+    .go.ghost:hover { color: var(--ink); background: var(--row-hover); }
+    .vm-wrap { position: relative; }
+    .vm-svg { width: 100%; height: auto; display: block; background: var(--card);
+      border: 1px solid var(--hairline); border-radius: 20px; box-shadow: var(--shadow-card); }
+    .vm-node { cursor: pointer; transform-box: fill-box; transform-origin: center;
+      transition: opacity .3s var(--ease-out), r .35s var(--spring); }
+    .vm-node.in { animation: vm-pop .5s var(--spring) both; animation-delay: var(--d, 0ms); }
+    @keyframes vm-pop { from { opacity: 0; transform: scale(0); } to { opacity: 1; transform: scale(1); } }
+    .vm-node.s-active { fill: var(--accent-fill); }
+    .vm-node.s-superseded { fill: var(--muted-2); }
+    .vm-node.s-quarantined { fill: var(--bad-fill); }
+    .vm-node.s-archived { fill: var(--hairline-strong); }
+    .vm-node.dim { opacity: .16; }
+    .vm-node.hit { opacity: 1; }
+    .vm-halo { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0;
+      animation: vm-halo 1.7s ease-out infinite; }
+    @keyframes vm-halo { 0% { opacity: .5; r: 8px; } 70%,100% { opacity: 0; r: 22px; } }
+    .vm-edge { stroke: var(--accent); stroke-width: 1.5; opacity: .5; stroke-linecap: round;
+      stroke-dasharray: var(--len); stroke-dashoffset: var(--len);
+      animation: cg-draw .5s var(--ease-out) forwards; animation-delay: var(--d, 0ms); }
+    .vm-query { fill: var(--warn); stroke: var(--card); stroke-width: 2.5;
+      animation: vm-pop .45s var(--spring) both; transform-box: fill-box; transform-origin: center; }
+    .vm-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 14px;
+      font-size: 12px; color: var(--muted); }
+    .vm-legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .vm-legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+    .dot.s-active { background: var(--accent-fill); } .dot.s-superseded { background: var(--muted-2); }
+    .dot.s-quarantined { background: var(--bad-fill); } .dot.s-archived { background: var(--hairline-strong); }
+    .dot.s-query { background: var(--warn); border-radius: 2px; transform: rotate(45deg); }
+    .vm-tip { position: absolute; pointer-events: none; z-index: 5; max-width: 280px;
+      background: var(--chrome); backdrop-filter: saturate(1.6) blur(14px);
+      -webkit-backdrop-filter: saturate(1.6) blur(14px);
+      border: 1px solid var(--hairline-strong); border-radius: 12px; padding: 9px 12px;
+      box-shadow: var(--shadow-card); font-size: 12.5px; color: var(--ink); line-height: 1.4;
+      transition: opacity .15s ease; }
+    .vm-tip .meta { font: 600 10px var(--mono); color: var(--muted); text-transform: uppercase;
+      letter-spacing: .04em; margin-bottom: 3px; }
+    @media (prefers-reduced-motion: reduce) {
+      .vm-node.in, .vm-query { animation: none; opacity: 1; transform: none; }
+      .vm-halo { animation: none; opacity: 0; } .vm-edge { animation: none; stroke-dashoffset: 0; }
+    }
+
     /* ---- hallucination contagion ---- */
     .cg-toggle { display: inline-flex; gap: 2px; background: var(--seg-bg); padding: 3px;
       border-radius: 999px; margin: 6px 0 22px; }
@@ -572,6 +617,7 @@
         <span class="seg-thumb" id="seg-thumb" aria-hidden="true"></span>
         <button data-view="fleet" class="active">Fleet</button>
         <button data-view="memory">Memory &amp; search</button>
+        <button data-view="vecmap">Vector map</button>
         <button data-view="canonical">Canonical facts</button>
         <button data-view="immune">Immune feed</button>
         <button data-view="contagion">Contagion</button>
@@ -609,6 +655,27 @@
         <table id="mem-table"><thead><tr>
           <th>Agent</th><th>Content</th><th>Status</th><th>Fact key</th>
         </tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="vecmap">
+      <h2 class="view-title">Vector memory map</h2>
+      <p class="sub">Every memory placed by its real embedding — a 2D projection of the vector space the C-SPANN index serves. Search runs the real nearest-neighbour query and lights up the memories it retrieves.</p>
+      <div class="search-row">
+        <input type="text" id="vm-q" placeholder="e.g. database latency runbook fix" autocomplete="off" />
+        <button class="go" id="vm-btn">Search</button>
+        <button class="go ghost" id="vm-clear">Clear</button>
+      </div>
+      <div class="vm-wrap">
+        <svg id="vm-svg" class="vm-svg" viewBox="0 0 640 440" role="img" aria-label="Vector memory map"></svg>
+        <div class="vm-tip" id="vm-tip" hidden></div>
+        <div class="vm-legend">
+          <span><i class="dot s-active"></i>active</span>
+          <span><i class="dot s-superseded"></i>superseded</span>
+          <span><i class="dot s-quarantined"></i>quarantined</span>
+          <span><i class="dot s-archived"></i>archived</span>
+          <span><i class="dot s-query"></i>query</span>
+        </div>
       </div>
     </section>
 
@@ -1234,9 +1301,76 @@
       });
     }
 
+    // ---- vector memory map ----
+    let VMAP = null;
+    const VM = { padX: 44, padY: 34, w: 640, h: 440 };
+    const vmX = (x) => VM.padX + x * (VM.w - 2 * VM.padX);
+    const vmY = (y) => VM.padY + (1 - y) * (VM.h - 2 * VM.padY);
+    async function loadVectorMap() {
+      VMAP = await api("/api/vector_map");
+      const svg = $("#vm-svg"); svg.textContent = "";
+      VMAP.points.forEach((p, i) => {
+        const c = svgEl("circle", { cx: vmX(p.x), cy: vmY(p.y), r: 6,
+          class: "vm-node in s-" + p.status, "data-id": p.mem_id });
+        c.style.setProperty("--d", Math.min(i, 30) * 22 + "ms");
+        c.addEventListener("mouseenter", () => vmTip(p, c));
+        c.addEventListener("mouseleave", vmHideTip);
+        svg.append(c);
+      });
+    }
+    function vmOverlayClear(svg) {
+      svg.querySelectorAll(".vm-edge, .vm-halo, .vm-query").forEach(n => n.remove());
+    }
+    async function vmSearch() {
+      const q = $("#vm-q").value.trim(); if (!q || !VMAP) return;
+      const d = await api("/api/vector_search", { method: "POST",
+        headers: { "content-type": "application/json" }, body: JSON.stringify({ query: q, k: 5 }) });
+      const svg = $("#vm-svg"); vmOverlayClear(svg);
+      const hitIds = new Set(d.hits.map(h => h.mem_id)), posOf = {};
+      svg.querySelectorAll(".vm-node").forEach(n => {
+        const id = n.getAttribute("data-id");
+        posOf[id] = [+n.getAttribute("cx"), +n.getAttribute("cy")];
+        const hit = hitIds.has(id);
+        n.classList.toggle("hit", hit); n.classList.toggle("dim", !hit);
+        n.setAttribute("r", hit ? 9 : 6);
+      });
+      const qx = vmX(d.query_xy[0]), qy = vmY(d.query_xy[1]);
+      d.hits.forEach((h, i) => {
+        const p = posOf[h.mem_id]; if (!p) return;
+        const line = svgEl("line", { x1: qx, y1: qy, x2: p[0], y2: p[1], class: "vm-edge" });
+        line.style.setProperty("--len", Math.hypot(p[0] - qx, p[1] - qy));
+        line.style.setProperty("--d", (i * 80) + "ms");
+        svg.insertBefore(line, svg.firstChild);
+        const halo = svgEl("circle", { cx: p[0], cy: p[1], r: 8, class: "vm-halo" });
+        halo.style.setProperty("--d", (i * 150) + "ms");
+        svg.append(halo);
+      });
+      const s = 10;
+      svg.append(svgEl("rect", { x: qx - s / 2, y: qy - s / 2, width: s, height: s, rx: 2,
+        class: "vm-query", transform: `rotate(45 ${qx} ${qy})` }));
+    }
+    function vmClearSearch() {
+      $("#vm-q").value = "";
+      const svg = $("#vm-svg"); vmOverlayClear(svg);
+      svg.querySelectorAll(".vm-node").forEach(n => { n.classList.remove("hit", "dim"); n.setAttribute("r", 6); });
+      vmHideTip();
+    }
+    function vmTip(p, node) {
+      const tip = $("#vm-tip"); tip.hidden = false; tip.textContent = "";
+      tip.append(el("div", "meta", p.agent_id + " · " + p.status), el("div", null, p.content));
+      const wrap = node.ownerSVGElement.parentElement.getBoundingClientRect();
+      const r = node.getBoundingClientRect();
+      tip.style.left = Math.max(0, r.left - wrap.left + r.width / 2 + 12) + "px";
+      tip.style.top = Math.max(0, r.top - wrap.top - 6) + "px";
+    }
+    function vmHideTip() { $("#vm-tip").hidden = true; }
+    $("#vm-btn").onclick = vmSearch;
+    $("#vm-q").addEventListener("keydown", (e) => { if (e.key === "Enter") vmSearch(); });
+    $("#vm-clear").onclick = vmClearSearch;
+
     // initial load
     loadOverview(); loadMemories(); loadCanonical(); loadQuarantine(); loadResults();
-    loadAblation(); loadAttackCategories(); loadContagion();
+    loadAblation(); loadAttackCategories(); loadContagion(); loadVectorMap();
   </script>
 </body>
 </html>

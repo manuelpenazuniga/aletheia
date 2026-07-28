@@ -267,6 +267,47 @@ def test_attack_token_gate(world, monkeypatch):
     assert ok.status_code == 200 and ok.json()["detected"] is True
 
 
+# ------------------------------------------------------------- vector map
+def test_vector_map_projects_every_memory(client):
+    d = client.get("/api/vector_map").json()
+    assert d["count"] > 0 and len(d["points"]) == d["count"]
+    p = d["points"][0]
+    assert {"mem_id", "x", "y", "agent_id", "status", "content"} <= p.keys()
+    # Coordinates are normalised to the unit square, and the cloud actually spreads.
+    xs = [q["x"] for q in d["points"]]
+    ys = [q["y"] for q in d["points"]]
+    assert all(0.0 <= v <= 1.0 for v in xs + ys)
+    assert (max(xs) - min(xs)) > 0.3 and (max(ys) - min(ys)) > 0.3
+
+
+def test_vector_search_returns_query_point_and_real_hits(client):
+    m = client.get("/api/vector_map").json()
+    ids = {p["mem_id"] for p in m["points"]}
+    r = client.post("/api/vector_search", json={"query": "database latency runbook", "k": 4})
+    assert r.status_code == 200
+    d = r.json()
+    assert len(d["query_xy"]) == 2 and all(0.0 <= v <= 1.0 for v in d["query_xy"])
+    assert d["hits"], "search should retrieve neighbours"
+    # Every highlighted hit is a real memory present on the map.
+    assert all(h["mem_id"] in ids for h in d["hits"])
+    scores = [h["score"] for h in d["hits"]]
+    assert scores == sorted(scores, reverse=True)  # ranked best-first
+
+
+def test_projection_places_similar_vectors_together():
+    from demoapp.projection import cosine, fit
+
+    a = [1.0, 0.0, 0.0, 0.0]
+    a2 = [0.98, 0.05, 0.0, 0.0]  # very close to a
+    b = [0.0, 0.0, 0.0, 1.0]  # far from a
+    proj = fit([a, a2, b])
+    pa, pa2, pb = proj.project(a), proj.project(a2), proj.project(b)
+    d_close = ((pa[0] - pa2[0]) ** 2 + (pa[1] - pa2[1]) ** 2) ** 0.5
+    d_far = ((pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2) ** 0.5
+    assert d_close < d_far  # similar vectors land nearer than dissimilar ones
+    assert cosine(a, a) == pytest.approx(1.0)
+
+
 # ----------------------------------------------------- hallucination contagion
 def test_contagion_spreads_only_without_immune(client):
     d = client.get("/api/contagion").json()
