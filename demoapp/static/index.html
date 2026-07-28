@@ -30,6 +30,7 @@
       --on-bad: #ffffff;
       --bad-tint: rgba(255, 59, 48, 0.1);
       --bad-border: rgba(255, 59, 48, 0.3);
+      --bad-on-tint: #c00013;
       --warn: #a05a00;
       --warn-tint: rgba(255, 149, 0, 0.14);
       --warn-border: rgba(255, 149, 0, 0.35);
@@ -72,6 +73,7 @@
         --on-bad: #000000;
         --bad-tint: rgba(255, 69, 58, 0.16);
         --bad-border: rgba(255, 69, 58, 0.35);
+        --bad-on-tint: #ff8a84;
         --warn: #ffb340;
         --warn-tint: rgba(255, 159, 10, 0.16);
         --warn-border: rgba(255, 159, 10, 0.35);
@@ -359,6 +361,99 @@
     .flag:not(.off):active .knob { transform: translateX(17px) scale(1.06); }
     .flag.off:active .knob { transform: scale(1.06); }
 
+    /* ---------- system map ---------- */
+    .sysmap {
+      background: var(--card); border: 1px solid var(--hairline);
+      border-radius: 16px; box-shadow: var(--shadow-card);
+      padding: 14px 16px 16px; margin-bottom: 22px;
+    }
+    .sm-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+    .sm-title { font: 600 12px var(--mono); letter-spacing: 0.02em; color: var(--muted); }
+    .sm-legend {
+      margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+      font: 500 11px var(--mono); color: var(--muted); white-space: nowrap;
+    }
+    .sm-dot {
+      width: 7px; height: 7px; border-radius: 50%; flex: none;
+      background: var(--good-fill); display: inline-block;
+      transition: background 0.25s ease;
+    }
+    .sm-dot.bad { background: var(--bad-fill); }
+    .sm-dot.na { background: var(--muted-2); }
+    .sm-box {
+      border: 1px solid var(--hairline); background: var(--card-2);
+      border-radius: 12px; padding: 10px 12px;
+    }
+    .sm-box.sm-db { border-color: var(--hairline-strong); }
+    .sm-box.sm-db .sm-boxlabel { color: var(--ink); }
+    .sm-boxlabel {
+      font: 600 11px var(--mono); text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--muted); margin-bottom: 8px;
+    }
+    .sm-sub { font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+    .sm-agents { display: flex; flex-wrap: wrap; gap: 6px; }
+    .sm-agent {
+      font: 500 11px var(--mono); color: var(--ink);
+      background: var(--gray-tint); padding: 2px 9px; border-radius: 999px;
+    }
+    .sm-agent.adv { color: var(--bad-on-tint); background: var(--bad-tint); }
+    .sm-mid { display: grid; grid-template-columns: 2fr 3fr; gap: 0 14px; }
+    .sm-col { display: flex; flex-direction: column; }
+    .sm-col .sm-box { flex: 1; }
+    .sm-link { position: relative; height: 26px; display: flex; align-items: center; justify-content: center; }
+    .sm-link::before {
+      content: ""; position: absolute; left: 50%; top: 2px; bottom: 2px;
+      width: 1.5px; transform: translateX(-50%); background: var(--hairline-strong);
+    }
+    .sm-link.arrow::after {
+      content: ""; position: absolute; left: 50%; bottom: 2px; width: 6px; height: 6px;
+      border-right: 1.5px solid var(--hairline-strong); border-bottom: 1.5px solid var(--hairline-strong);
+      transform: translateX(-50%) rotate(45deg);
+    }
+    .sm-flow {
+      position: relative; background: var(--card); border: 1px solid var(--hairline);
+      border-radius: 999px; padding: 2px 9px;
+      font: 500 10.5px var(--mono); color: var(--muted); white-space: nowrap;
+    }
+    .sm-comp {
+      display: block; width: 100%; text-align: left; font: inherit; color: inherit;
+      border: 1px solid var(--hairline); background: var(--card);
+      border-radius: 10px; padding: 9px 11px; margin-top: 8px;
+      transition: border-color 0.25s ease, background 0.25s ease, transform 0.15s var(--ease-out);
+    }
+    button.sm-comp { cursor: pointer; }
+    button.sm-comp:active { transform: scale(0.985); }
+    @media (hover: hover) and (pointer: fine) {
+      button.sm-comp:hover { border-color: var(--hairline-strong); }
+    }
+    .sm-comprow { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .sm-name { font-size: 12.5px; font-weight: 600; transition: color 0.25s ease; }
+    .sm-off-badge {
+      margin-left: auto; font: 700 9.5px var(--mono);
+      letter-spacing: 0.08em; text-transform: uppercase; color: var(--bad-on-tint);
+      opacity: 0; transform: scale(0.9);
+      transition: opacity 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+    }
+    .sm-sub-stack { display: grid; margin-top: 5px; }
+    .sm-sub-stack > span { grid-area: 1 / 1; font-size: 11.5px; line-height: 1.4; transition: opacity 0.25s ease; }
+    .sm-sub-on { color: var(--muted); }
+    .sm-sub-off { color: var(--bad-on-tint); opacity: 0; }
+    .sm-comp.off { border-color: var(--bad-border); border-style: dashed; background: var(--bad-tint); }
+    .sm-comp.off .sm-dot { background: var(--bad-fill); }
+    .sm-comp.off .sm-name { color: var(--bad-on-tint); }
+    .sm-comp.off .sm-off-badge { opacity: 1; transform: none; }
+    .sm-comp.off .sm-sub-on { opacity: 0; }
+    .sm-comp.off .sm-sub-off { opacity: 1; }
+    .sm-comp.sm-na { border-style: dashed; }
+    .sm-na .sm-name { color: var(--muted); }
+    .sm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .sm-chips code { font-size: 11px; }
+    .sm-cycles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+    .sm-cycles .sm-comp { margin-top: 0; }
+    @media (max-width: 640px) {
+      .sm-mid { grid-template-columns: 1fr; }
+    }
+
     /* ---------- ablation wall ---------- */
     .wall { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
     .panel-card {
@@ -499,6 +594,73 @@
       <p class="sub">Turn a component off and the world is rebuilt for real through the same core cycles. Watch stale knowledge, poison, or footprint climb.</p>
       <div class="note" id="ks-note">Seeded offline simulation: every flip rebuilds an in-memory demo world (it never reads or mutates live fleet memory). Demo tuning: fleet chatter is written at low importance and the token budget sits just below the footprint, so metabolic forgetting prunes chatter while runbook fixes survive — a documented demonstration choice, not an experimental result.</div>
       <div class="toggles" id="toggles"></div>
+      <h3 class="group-title">System map</h3>
+      <p class="sub">How Aletheia is wired in production. Kill a flag — or click a component in the map — and it goes dark; the metrics below show what that costs.</p>
+      <div class="sysmap enter" id="sysmap" style="--d: 90ms">
+        <div class="sm-head">
+          <span class="sm-title">Aletheia — institutional memory layer</span>
+          <span class="sm-legend"><i class="sm-dot"></i> active <i class="sm-dot bad"></i> killed</span>
+        </div>
+        <div class="sm-box">
+          <div class="sm-boxlabel">Fleet · SRE agents on Bedrock Claude</div>
+          <div class="sm-agents" id="sm-agents"><span class="sm-agent">…</span></div>
+        </div>
+        <div class="sm-mid">
+          <div class="sm-col">
+            <div class="sm-link arrow"><span class="sm-flow">read · MCP</span></div>
+            <div class="sm-box">
+              <div class="sm-boxlabel">Managed MCP server</div>
+              <div class="sm-sub">read-only · RBAC · audit log</div>
+            </div>
+            <div class="sm-link arrow"></div>
+          </div>
+          <div class="sm-col">
+            <div class="sm-link arrow"><span class="sm-flow">write · HTTP</span></div>
+            <div class="sm-box">
+              <div class="sm-boxlabel">Ingest service</div>
+              <button type="button" class="sm-comp" data-flag="enable_immune" role="switch">
+                <span class="sm-comprow"><i class="sm-dot"></i><span class="sm-name">Immune gate</span><span class="sm-off-badge">off</span></span>
+                <span class="sm-sub-stack">
+                  <span class="sm-sub-on">provenance · anomaly · injection patterns</span>
+                  <span class="sm-sub-off">poisoned writes land in active memory</span>
+                </span>
+              </button>
+            </div>
+            <div class="sm-link arrow"></div>
+          </div>
+        </div>
+        <div class="sm-box sm-db">
+          <div class="sm-boxlabel">CockroachDB · serializable shared memory</div>
+          <div class="sm-chips">
+            <code>memories</code><code>VECTOR · C-SPANN</code><code>canonical_facts</code><code>provenance</code><code>quarantine_log</code>
+          </div>
+        </div>
+        <div class="sm-link"><span class="sm-flow">supersede · promote · archive</span></div>
+        <div class="sm-box">
+          <div class="sm-boxlabel">Memory cycles · Lambda + EventBridge</div>
+          <div class="sm-cycles">
+            <button type="button" class="sm-comp" data-flag="enable_consolidation" role="switch">
+              <span class="sm-comprow"><i class="sm-dot"></i><span class="sm-name">Consolidation</span><span class="sm-off-badge">off</span></span>
+              <span class="sm-sub-stack">
+                <span class="sm-sub-on">knowledge-update · supersede</span>
+                <span class="sm-sub-off">obsolete runbooks stay retrievable</span>
+              </span>
+            </button>
+            <button type="button" class="sm-comp" data-flag="enable_forgetting" role="switch">
+              <span class="sm-comprow"><i class="sm-dot"></i><span class="sm-name">Forgetting</span><span class="sm-off-badge">off</span></span>
+              <span class="sm-sub-stack">
+                <span class="sm-sub-on">metabolic token budget</span>
+                <span class="sm-sub-off">footprint grows unbounded</span>
+              </span>
+            </button>
+            <div class="sm-comp sm-na">
+              <span class="sm-comprow"><i class="sm-dot na"></i><span class="sm-name">Gossip</span></span>
+              <span class="sm-sub-stack"><span class="sm-sub-on">live fleet only</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <h3 class="group-title">Fleet metrics</h3>
       <div id="killswitch-metrics"></div>
       <h3 class="group-title mt">Ablation wall</h3>
       <p class="sub">The full world beside each single-component ablation — same scenario, same seed, one flag removed.</p>
@@ -619,6 +781,11 @@
         countTo(v, n);
       }
       staggerIn(cards.children);
+      const smAgents = $("#sm-agents");
+      smAgents.innerHTML = "";
+      for (const a of d.agents) {
+        smAgents.append(el("span", "sm-agent" + (a.agent_id.startsWith("adversary") ? " adv" : ""), a.agent_id));
+      }
       const tb = $("#agents-table tbody"); tb.innerHTML = "";
       for (const a of d.agents) {
         const tr = el("tr");
@@ -844,7 +1011,7 @@
       syncToggles();
     }
     function syncToggles() {
-      for (const t of document.querySelectorAll("#toggles .flag")) {
+      for (const t of document.querySelectorAll("#toggles .flag, #sysmap [data-flag]")) {
         const on = ksFlags[t.dataset.flag];
         t.classList.toggle("off", !on);
         t.setAttribute("aria-checked", String(on));
@@ -910,6 +1077,10 @@
     $("#search-btn").onclick = doSearch;
     $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
     $("#attack-btn").onclick = launchAttack;
+    // the system map's components are kill-switches too — same flags
+    for (const b of document.querySelectorAll("#sysmap button[data-flag]")) {
+      b.onclick = () => { ksFlags[b.dataset.flag] = !ksFlags[b.dataset.flag]; syncToggles(); runKillswitch(); };
+    }
 
     // initial load
     loadOverview(); loadMemories(); loadCanonical(); loadQuarantine(); loadResults();
