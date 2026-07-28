@@ -376,6 +376,35 @@ def _register_routes(app: FastAPI) -> None:
             request.app.state._contagion = cache
         return cache
 
+    @app.get("/api/fleet_activity")
+    async def fleet_activity(request: Request) -> dict[str, Any]:
+        """A real write+retrieve workload, timed: throughput, p95 retrieval latency,
+        and footprint per tick. Latency and footprint climb as memory grows — the
+        cost metabolic forgetting bounds. Cached (one real run) and replayed."""
+        cache = getattr(request.app.state, "_activity", None)
+        if cache is None:
+            from demoapp.activity import run_fleet_activity
+
+            cache = run_fleet_activity()
+            request.app.state._activity = cache
+        return cache
+
+    @app.get("/api/e1_race")
+    async def e1_race(request: Request, n: int = 20) -> dict[str, Any]:
+        """A live, real concurrency race: N agents write shared memory through the
+        naive non-transactional baseline, and the real cumulative inconsistencies
+        climb checkpoint by checkpoint — against CockroachDB's measured flat zero.
+        Cached per N (a genuine run each; caching keeps the curve stable per session)."""
+        from demoapp.e1race import ALLOWED_N, run_e1_race
+
+        if n not in ALLOWED_N:
+            raise HTTPException(status_code=422, detail=f"n must be one of {list(ALLOWED_N)}")
+        cache = getattr(request.app.state, "_e1_race", None) or {}
+        if n not in cache:
+            cache[n] = run_e1_race(n=n)
+            request.app.state._e1_race = cache
+        return cache[n]
+
     @app.get("/api/results")
     async def results() -> JSONResponse:
         """The real R1/R2 experiment numbers, from the committed run rows."""

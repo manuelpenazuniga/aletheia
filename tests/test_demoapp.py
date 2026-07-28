@@ -267,6 +267,34 @@ def test_attack_token_gate(world, monkeypatch):
     assert ok.status_code == 200 and ok.json()["detected"] is True
 
 
+# ------------------------------------------------------- live fleet activity
+def test_fleet_activity_latency_and_footprint_climb(client):
+    d = client.get("/api/fleet_activity").json()
+    tl = d["timeline"]
+    assert len(tl) >= 2 and d["total_writes"] > 0
+    assert {"tick", "ops_per_sec", "p95_ms", "footprint_kb"} <= tl[0].keys()
+    # Real cost of an unbounded memory: retrieval latency and footprint grow.
+    assert tl[-1]["p95_ms"] >= tl[0]["p95_ms"]
+    assert tl[-1]["footprint_kb"] > tl[0]["footprint_kb"]
+
+
+# ------------------------------------------------------- live concurrency race
+def test_e1_race_naive_climbs_crdb_flat(client):
+    d = client.get("/api/e1_race?n=20").json()
+    assert d["n"] == 20 and d["writes"] > 0
+    tl = d["timeline"]
+    assert len(tl) >= 2
+    # The naive baseline accumulates real inconsistencies; CockroachDB stays at 0.
+    assert d["naive_final"] > 0
+    assert d["crdb_per_1000"] == 0.0
+    assert all("writes" in c and "naive_per_1000" in c for c in tl)
+    assert tl[-1]["writes"] == d["writes"]  # the timeline reaches every write
+
+
+def test_e1_race_rejects_bad_n(client):
+    assert client.get("/api/e1_race?n=7").status_code == 422
+
+
 # ------------------------------------------------------------- vector map
 def test_vector_map_projects_every_memory(client):
     d = client.get("/api/vector_map").json()

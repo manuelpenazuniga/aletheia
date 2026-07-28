@@ -511,6 +511,49 @@
       .card .n { font-size: 25px; }
       .search-row { flex-wrap: wrap; }
     }
+    /* ---- live fleet activity sparklines ---- */
+    .act-head { display: flex; justify-content: space-between; align-items: center;
+      margin: 26px 0 4px; }
+    .act-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 12px; }
+    @media (max-width: 720px) { .act-grid { grid-template-columns: 1fr; } }
+    .act-card { background: var(--card); border: 1px solid var(--hairline); border-radius: 16px;
+      box-shadow: var(--shadow-card); padding: 14px 16px; }
+    .act-lbl { font-size: 12px; color: var(--muted); }
+    .act-val { font: 700 24px var(--mono); color: var(--ink); margin-top: 2px; letter-spacing: -.02em; }
+    .act-unit { font-size: 11px; color: var(--muted-2); margin-bottom: 8px; }
+    .spark { width: 100%; height: 44px; display: block; }
+    .spark-line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+    .spark-area { opacity: .15; }
+    .spark-ops .spark-line { stroke: var(--accent-fill); } .spark-ops .spark-area { fill: var(--accent-fill); }
+    .spark-p95 .spark-line { stroke: var(--warn); } .spark-p95 .spark-area { fill: var(--warn); }
+    .spark-fp .spark-line { stroke: var(--good-fill); } .spark-fp .spark-area { fill: var(--good-fill); }
+    .spark-line.draw { stroke-dasharray: var(--len); stroke-dashoffset: var(--len);
+      animation: cg-draw 1.2s var(--ease-out) forwards; }
+    @media (prefers-reduced-motion: reduce) { .spark-line.draw { animation: none; stroke-dashoffset: 0; } }
+
+    /* ---- live concurrency race (E1) ---- */
+    .e1race { background: var(--card); border: 1px solid var(--hairline); border-radius: 20px;
+      box-shadow: var(--shadow-card); padding: 18px 20px; margin-bottom: 26px; }
+    .e1-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+      flex-wrap: wrap; margin-bottom: 12px; }
+    .e1-head h3 { margin: 0 0 3px; font-size: 15px; letter-spacing: -.01em; }
+    .e1-controls { display: flex; gap: 10px; align-items: center; }
+    .e1-svg { width: 100%; height: auto; display: block; }
+    .e1-grid { stroke: var(--hairline); stroke-width: 1; }
+    .e1-axis { font: 500 10px var(--mono); fill: var(--muted-2); }
+    .e1-lbl { font: 700 11px var(--sans); }
+    .e1-flat { stroke: var(--good-fill); stroke-width: 2.5; stroke-dasharray: 5 5; }
+    .e1-area { fill: var(--bad-tint); opacity: 0; animation: e1-fade .9s ease-out .7s both; }
+    @keyframes e1-fade { to { opacity: 1; } }
+    .e1-line { fill: none; stroke: var(--bad-fill); stroke-width: 2.5; stroke-linejoin: round;
+      stroke-linecap: round; stroke-dasharray: var(--len); stroke-dashoffset: var(--len);
+      animation: cg-draw 1.7s var(--ease-out) forwards; }
+    .e1-final { margin-top: 10px; font-size: 13px; color: var(--muted); }
+    .e1-final .num { font: 700 15px var(--mono); color: var(--bad); }
+    @media (prefers-reduced-motion: reduce) {
+      .e1-line { animation: none; stroke-dashoffset: 0; } .e1-area { animation: none; opacity: 1; }
+    }
+
     /* ---- vector memory map ---- */
     .go.ghost { background: transparent; color: var(--muted); box-shadow: none;
       border: 1px solid var(--hairline-strong); }
@@ -638,6 +681,31 @@
           <th>Agent</th><th class="num">Active</th><th class="num">Superseded</th>
           <th class="num">Quarantined</th><th class="num">Archived</th><th class="num">Total</th>
         </tr></thead><tbody></tbody></table>
+      </div>
+      <div class="act-head">
+        <h3 class="group-title" style="margin:0">Live activity</h3>
+        <button class="go ghost" id="act-run">Run activity</button>
+      </div>
+      <p class="sub">A real write + retrieve workload. Latency and footprint climb as memory grows — the cost metabolic forgetting bounds.</p>
+      <div class="act-grid">
+        <div class="act-card">
+          <div class="act-lbl">Throughput</div>
+          <div class="act-val" id="act-ops">—</div>
+          <div class="act-unit">ops / sec</div>
+          <svg class="spark spark-ops" id="spark-ops" viewBox="0 0 240 48" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="act-card">
+          <div class="act-lbl">p95 retrieval latency</div>
+          <div class="act-val" id="act-p95">—</div>
+          <div class="act-unit">ms · climbs with memory</div>
+          <svg class="spark spark-p95" id="spark-p95" viewBox="0 0 240 48" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="act-card">
+          <div class="act-lbl">Footprint</div>
+          <div class="act-val" id="act-fp">—</div>
+          <div class="act-unit">KB · bounded by forgetting</div>
+          <svg class="spark spark-fp" id="spark-fp" viewBox="0 0 240 48" preserveAspectRatio="none"></svg>
+        </div>
       </div>
     </section>
 
@@ -802,6 +870,24 @@
     <section id="results">
       <h2 class="view-title">Results — real numbers</h2>
       <p class="sub">Populated only from real experiment runs (<code>docs/experiment_data/</code>). Never hand-typed.</p>
+      <div class="e1race">
+        <div class="e1-head">
+          <div>
+            <h3>Live concurrency race — E1</h3>
+            <p class="sub" style="margin:0">N agents write shared memory through a real non-transactional store; inconsistencies climb live, while CockroachDB SERIALIZABLE holds at zero.</p>
+          </div>
+          <div class="e1-controls">
+            <div class="cg-toggle" id="e1-n">
+              <button data-n="5">N=5</button>
+              <button data-n="20" class="active">N=20</button>
+              <button data-n="50">N=50</button>
+            </div>
+            <button class="go ghost" id="e1-replay">Replay</button>
+          </div>
+        </div>
+        <svg id="e1-svg" class="e1-svg" viewBox="0 0 640 300" role="img" aria-label="Concurrency race chart"></svg>
+        <div class="e1-final" id="e1-final"></div>
+      </div>
       <div id="results-body"></div>
     </section>
   </main>
@@ -1368,9 +1454,82 @@
     $("#vm-q").addEventListener("keydown", (e) => { if (e.key === "Enter") vmSearch(); });
     $("#vm-clear").onclick = vmClearSearch;
 
+    // ---- live concurrency race (E1) ----
+    let E1N = 20;
+    async function loadE1Race(n) {
+      E1N = n;
+      document.querySelectorAll("#e1-n button").forEach(b => b.classList.toggle("active", +b.dataset.n === n));
+      drawE1(await api("/api/e1_race?n=" + n));
+    }
+    function drawE1(d) {
+      const svg = $("#e1-svg"); svg.textContent = "";
+      const W = 640, H = 300, L = 50, R = 18, T = 16, B = 38;
+      const x0 = L, x1 = W - R, y0 = T, y1 = H - B;
+      const total = d.writes || 1;
+      const maxY = Math.max(1000, Math.ceil(d.naive_final / 200) * 200);
+      const X = (w) => x0 + (w / total) * (x1 - x0);
+      const Y = (v) => y1 - (v / maxY) * (y1 - y0);
+      for (let v = 0; v <= maxY + 1; v += maxY / 4) {
+        const y = Y(v);
+        svg.append(svgEl("line", { x1: x0, y1: y, x2: x1, y2: y, class: "e1-grid" }));
+        const t = svgEl("text", { x: x0 - 8, y: y + 3, "text-anchor": "end", class: "e1-axis" });
+        t.textContent = Math.round(v); svg.append(t);
+      }
+      const xl = svgEl("text", { x: (x0 + x1) / 2, y: H - 10, "text-anchor": "middle", class: "e1-axis" });
+      xl.textContent = total + " concurrent writes  ·  N=" + d.n + " agents"; svg.append(xl);
+      // CockroachDB flat zero line
+      svg.append(svgEl("line", { x1: x0, y1: Y(0), x2: x1, y2: Y(0), class: "e1-flat" }));
+      const cl = svgEl("text", { x: x1, y: Y(0) - 7, "text-anchor": "end", class: "e1-lbl", fill: "var(--good)" });
+      cl.textContent = "CockroachDB SERIALIZABLE · 0"; svg.append(cl);
+      // naive area + line
+      const pts = [[X(0), Y(0)], ...d.timeline.map(c => [X(c.writes), Y(c.naive_per_1000)])];
+      const path = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+      svg.append(svgEl("path", { d: path + ` L ${X(total)} ${Y(0)} L ${x0} ${Y(0)} Z`, class: "e1-area" }));
+      const line = svgEl("path", { d: path, class: "e1-line" });
+      svg.append(line);
+      line.style.setProperty("--len", line.getTotalLength ? line.getTotalLength() : 1200);
+      const end = pts[pts.length - 1];
+      const nl = svgEl("text", { x: end[0], y: end[1] - 9, "text-anchor": "end", class: "e1-lbl", fill: "var(--bad)" });
+      nl.textContent = "naive (non-transactional)"; svg.append(nl);
+      const f = $("#e1-final"); f.textContent = "Naive baseline: ";
+      const num = el("span", "num", "0"); f.append(num);
+      f.append(document.createTextNode(" inconsistencies / 1000 writes  ·  CockroachDB SERIALIZABLE: 0"));
+      countTo(num, d.naive_final, 0);
+    }
+    $("#e1-n").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) loadE1Race(+b.dataset.n); });
+    $("#e1-replay").onclick = () => loadE1Race(E1N);
+
+    // ---- live fleet activity sparklines ----
+    let ACT = null;
+    async function loadActivity() { ACT = await api("/api/fleet_activity"); drawActivity(); }
+    function drawActivity() {
+      if (!ACT) return;
+      const tl = ACT.timeline, last = tl[tl.length - 1];
+      spark("spark-ops", tl.map(c => c.ops_per_sec));
+      spark("spark-p95", tl.map(c => c.p95_ms));
+      spark("spark-fp", tl.map(c => c.footprint_kb));
+      countTo($("#act-ops"), last.ops_per_sec, 0);
+      countTo($("#act-p95"), last.p95_ms, 0);
+      countTo($("#act-fp"), last.footprint_kb, 0);
+    }
+    function spark(id, vals) {
+      const svg = $("#" + id); svg.textContent = "";
+      const W = 240, H = 48, pad = 4, n = vals.length; if (!n) return;
+      const mx = Math.max(...vals, 1e-9), mn = Math.min(...vals, 0);
+      const X = (i) => pad + (n < 2 ? 0.5 : i / (n - 1)) * (W - 2 * pad);
+      const Y = (v) => H - pad - (mx - mn < 1e-9 ? 0.5 : (v - mn) / (mx - mn)) * (H - 2 * pad);
+      const pts = vals.map((v, i) => [X(i), Y(v)]);
+      const path = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+      svg.append(svgEl("path", { d: path + ` L ${X(n - 1)} ${H - pad} L ${X(0)} ${H - pad} Z`, class: "spark-area" }));
+      const line = svgEl("path", { d: path, class: "spark-line draw" }); svg.append(line);
+      line.style.setProperty("--len", line.getTotalLength ? line.getTotalLength() : 400);
+    }
+    $("#act-run").onclick = drawActivity;
+
     // initial load
     loadOverview(); loadMemories(); loadCanonical(); loadQuarantine(); loadResults();
-    loadAblation(); loadAttackCategories(); loadContagion(); loadVectorMap();
+    loadAblation(); loadAttackCategories(); loadContagion(); loadVectorMap(); loadE1Race(20);
+    loadActivity();
   </script>
 </body>
 </html>
